@@ -37,20 +37,52 @@ BUNDLE_SIGNING_PUBKEY = "TODO_REPLACE_WITH_BITFACED_PUBKEY"
 BUNDLE_MANIFEST_URL = "https://qube.cash/relay-bundle/manifest.json"
 
 
+def _qubes_root_dir() -> Optional[Path]:
+    """
+    Detect the Qubes install root — the folder that contains Qubes.exe / Qubes
+    alongside ollama/, qubes-backend/, etc.
+
+    Search order:
+      1. Parent of the running qubes-backend executable (frozen PyInstaller)
+      2. Parent of the running Python executable when in dev venv
+      3. None (caller falls back to project root)
+    """
+    if getattr(sys, "frozen", False):
+        # qubes-backend.exe lives at {root}/qubes-backend/qubes-backend.exe
+        # so parent.parent is the Qubes root
+        candidate = Path(sys.executable).parent.parent
+        if (candidate / "qubes-backend").is_dir():
+            return candidate
+        # Single-file build — executable IS in root
+        return Path(sys.executable).parent
+    return None
+
+
 def get_bundle_dir(qubes_data_dir: Optional[Path] = None) -> Path:
     """
-    Return the relay bundle directory inside the Qubes app data path.
+    Return the relay bundle directory.
 
-    All relay binaries and configs live here — one clear location.
+    Resolution order (same pattern as D:\\Qubes\\ollama\\):
+      1. Explicit qubes_data_dir argument
+      2. D:\\Qubes\\relay\\  (or equivalent root/relay/) when running installed
+      3. {project_root}/relay_bundle/ in dev mode
+
+    Layout:
+      relay/
+        p2pd[.exe]           ← Go libp2p-daemon binary
+        relay_list.json      ← community relay list
+        bundle_version.txt
+        bundle_manifest.json
     """
     if qubes_data_dir:
         bundle_dir = Path(qubes_data_dir) / "relay_bundle"
-    elif getattr(sys, "frozen", False):
-        # PyInstaller bundle — place alongside the executable
-        bundle_dir = Path(sys.executable).parent / "relay_bundle"
     else:
-        # Dev mode — use project root
-        bundle_dir = Path(__file__).resolve().parent.parent / "relay_bundle"
+        root = _qubes_root_dir()
+        if root:
+            bundle_dir = root / "relay"
+        else:
+            # Dev mode — project root/relay_bundle
+            bundle_dir = Path(__file__).resolve().parent.parent / "relay_bundle"
 
     bundle_dir.mkdir(parents=True, exist_ok=True)
     return bundle_dir
@@ -58,18 +90,28 @@ def get_bundle_dir(qubes_data_dir: Optional[Path] = None) -> Path:
 
 def get_p2pd_path(qubes_data_dir: Optional[Path] = None) -> Optional[Path]:
     """
-    Return path to the bundled p2pd binary, or None if not present.
+    Return path to the p2pd binary, or None if not present.
 
-    Falls back to system PATH if not found in bundle dir.
+    Search order:
+      1. relay/ folder (D:\\Qubes\\relay\\p2pd.exe)
+      2. qubes-backend\\_internal\\  (bundled alongside Python sidecar)
+      3. System PATH
     """
     bundle_dir = get_bundle_dir(qubes_data_dir)
     binary_name = "p2pd.exe" if platform.system() == "Windows" else "p2pd"
-    bundled = bundle_dir / binary_name
 
+    # Primary: relay/ folder
+    bundled = bundle_dir / binary_name
     if bundled.exists():
         return bundled
 
-    # Fall back to system PATH
+    # Secondary: _internal/ next to qubes-backend.exe
+    if getattr(sys, "frozen", False):
+        internal = Path(sys.executable).parent / "_internal" / binary_name
+        if internal.exists():
+            return internal
+
+    # Fallback: system PATH
     import shutil
     system_p2pd = shutil.which("p2pd")
     if system_p2pd:

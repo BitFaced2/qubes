@@ -106,9 +106,6 @@ interface RelayPreferences {
 interface EndpointPreferences {
   fulcrum_nodes: string[];
   nostr_relays: string[];
-  cauldron_indexer: string;
-  thorchain_midgard: string;
-  meta_icon_service: string;
 }
 
 export const SettingsTab: React.FC = () => {
@@ -259,7 +256,6 @@ export const SettingsTab: React.FC = () => {
     security: true,
     celebrationSettings: true,
     softwareUpdates: true,
-    relayNode: true,
     endpoints: true,
   });
 
@@ -271,8 +267,29 @@ export const SettingsTab: React.FC = () => {
   const [relayBundleStatus, setRelayBundleStatus] = useState<string | null>(null);
   const [newRelayPeer, setNewRelayPeer] = useState('');
 
-  // Endpoints state
-  const [endpointPrefs, setEndpointPrefs] = useState<EndpointPreferences>({ fulcrum_nodes: [], nostr_relays: [], cauldron_indexer: '', thorchain_midgard: '', meta_icon_service: '' });
+  // Endpoints state — pre-filled with well-known defaults (overwritten by saved prefs on load)
+  const [endpointPrefs, setEndpointPrefs] = useState<EndpointPreferences>({
+    fulcrum_nodes: [
+      'wss://bch.imaginary.cash:50004',
+      'wss://electroncash.de:50004',
+      'wss://bch.loping.net:50004',
+      'wss://blackie.c3-soft.com:50004',
+      'wss://electroncash.dk:50002',
+      'wss://electron.jochen-hoenicke.de:51002',
+      'wss://bitcoincash.network:50004',
+      'wss://bch.soul-dev.com:50002',
+    ],
+    nostr_relays: [
+      'wss://relay.damus.io',
+      'wss://nos.lol',
+      'wss://relay.nostr.band',
+      'wss://relay.snort.social',
+      'wss://nostr.wine',
+      'wss://relay.current.fyi',
+      'wss://relay.primal.net',
+      'wss://nostr-pub.wellorder.net',
+    ],
+  });
   const [endpointsDirty, setEndpointsDirty] = useState(false);
   const [savingEndpoints, setSavingEndpoints] = useState(false);
   const [endpointSaveMsg, setEndpointSaveMsg] = useState<string | null>(null);
@@ -525,6 +542,11 @@ export const SettingsTab: React.FC = () => {
     if (userId) {
       checkGpuAcceleration();
     }
+  }, [userId]);
+
+  // Load endpoints on mount
+  useEffect(() => {
+    if (userId) loadEndpoints();
   }, [userId]);
 
   // Listen for Ollama pull progress events
@@ -2972,157 +2994,133 @@ export const SettingsTab: React.FC = () => {
               )}
             </GlassCard>
             {/* =========================================================== */}
-            {/* Relay Node Panel */}
+            {/* Endpoints Panel (relay node + network endpoints combined)   */}
             {/* =========================================================== */}
             <GlassCard className="p-4 mt-4">
               <button
-                onClick={() => { togglePanel('relayNode'); if (collapsedPanels.relayNode) loadRelayData(); }}
+                onClick={() => { togglePanel('endpoints'); if (collapsedPanels.endpoints) { loadRelayData(); loadEndpoints(); } }}
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary flex items-center gap-2">
-                  📡 Relay Node
-                  {/* live status dot */}
+                  🔌 Endpoints
                   <span className={`inline-block w-2 h-2 rounded-full ${relayStatus.running ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-red-500'}`} />
                 </h2>
-                <span className={`text-text-tertiary transition-transform ${collapsedPanels.relayNode ? '' : 'rotate-180'}`}>▼</span>
-              </button>
-
-              {!collapsedPanels.relayNode && (
-                <>
-                  <p className="text-[10px] text-text-tertiary mt-2 mb-4">
-                    Your desktop app automatically acts as a P2P relay node. Every user who runs Qubes contributes relay capacity to the network — no configuration required.
-                  </p>
-
-                  {/* LOCAL RELAY */}
-                  <div className="border border-white/10 rounded-lg p-3 mb-4">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-3">LOCAL RELAY</h3>
-                    <div className="flex items-center gap-3 mb-3">
-                      <span className={`w-3 h-3 rounded-full flex-shrink-0 ${relayStatus.running ? 'bg-green-400 shadow-[0_0_6px_#4ade80] animate-pulse' : 'bg-red-500'}`} />
-                      <span className="text-xs text-text-secondary">{relayStatus.running ? 'Running' : 'Stopped'}</span>
-                      {relayStatus.running && relayStatus.peer_count !== undefined && (
-                        <span className="text-[10px] text-text-tertiary ml-auto">{relayStatus.online_peers}/{relayStatus.peer_count} peers online</span>
-                      )}
-                    </div>
-
-                    {relayStatus.running && relayStatus.peer_id && (
-                      <div className="mb-2">
-                        <p className="text-[10px] text-text-tertiary">Peer ID</p>
-                        <p className="text-xs font-mono text-text-secondary truncate">{relayStatus.peer_id}</p>
-                      </div>
-                    )}
-
-                    <label className="flex items-center gap-2 mb-3 cursor-pointer">
-                      <input type="checkbox" className="w-3 h-3 accent-accent-primary" checked={relayPrefs.relay_enabled}
-                        onChange={e => setRelayPrefs(p => ({ ...p, relay_enabled: e.target.checked }))} />
-                      <span className="text-xs text-text-secondary">Enable relay node</span>
-                    </label>
-
-                    {/* p2pd binary path */}
-                    <div className="mb-3">
-                      <p className="text-[10px] text-text-tertiary mb-1">p2pd binary path <span className="text-text-tertiary/60">(leave blank = use bundled)</span></p>
-                      <input
-                        type="text"
-                        className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
-                        placeholder="embedded (default)"
-                        value={relayPrefs.p2pd_binary_path || ''}
-                        onChange={e => setRelayPrefs(p => ({ ...p, p2pd_binary_path: e.target.value || null }))}
-                      />
-                    </div>
-
-                    <div className="flex gap-2 mb-3 flex-wrap text-[10px] text-text-tertiary">
-                      <label className="flex items-center gap-1">Port <input type="number" className="w-16 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_listen_port} onChange={e => setRelayPrefs(p => ({ ...p, relay_listen_port: parseInt(e.target.value) || 0 }))} /></label>
-                      <label className="flex items-center gap-1">Max connections <input type="number" className="w-14 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_max_connections} onChange={e => setRelayPrefs(p => ({ ...p, relay_max_connections: parseInt(e.target.value) || 50 }))} /></label>
-                      <label className="flex items-center gap-1">Retention <input type="number" className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_retention_days} onChange={e => setRelayPrefs(p => ({ ...p, relay_retention_days: parseInt(e.target.value) || 7 }))} /> days</label>
-                    </div>
-
-                    <div className="flex gap-2">
-                      <GlassButton variant="primary" size="sm" onClick={handleStartRelay} disabled={relayLoading || relayStatus.running} className="text-xs">▶ Start</GlassButton>
-                      <GlassButton variant="secondary" size="sm" onClick={handleStopRelay} disabled={relayLoading || !relayStatus.running} className="text-xs">■ Stop</GlassButton>
-                    </div>
-                  </div>
-
-                  {/* REMOTE RELAYS */}
-                  <div className="border border-white/10 rounded-lg p-3 mb-4">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-3">REMOTE RELAYS</h3>
-
-                    {/* Seed relays */}
-                    <p className="text-[10px] text-text-tertiary mb-2">SEED RELAYS (BitFaced-operated)</p>
-                    <div className="space-y-1 mb-4">
-                      {relayPeers.filter(p => p.builtin).slice(0, 3).map((peer, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peer.online === true ? 'bg-green-400' : peer.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
-                          <span className="text-[10px] font-mono text-text-secondary truncate flex-1">{peer.label}</span>
-                          {peer.latency_ms !== null && <span className="text-[10px] text-text-tertiary">{peer.latency_ms}ms</span>}
-                          {peer.online === false && <span className="text-[10px] text-red-400">offline</span>}
-                        </div>
-                      ))}
-                      {relayPeers.filter(p => p.builtin).length === 0 && (
-                        <p className="text-[10px] text-text-tertiary italic">Open the relay to see seed relay status</p>
-                      )}
-                    </div>
-
-                    {/* Custom relays */}
-                    <p className="text-[10px] text-text-tertiary mb-2">CUSTOM RELAYS</p>
-                    <div className="space-y-1 mb-2">
-                      {relayPeers.filter(p => !p.builtin).map((peer, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peer.online === true ? 'bg-green-400' : peer.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
-                          <span className="text-[10px] font-mono text-text-secondary truncate flex-1">{peer.multiaddr}</span>
-                          <button onClick={() => handleRemoveRelayPeer(peer.multiaddr)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="flex gap-2">
-                      <input type="text" className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
-                        placeholder="/ip4/.../tcp/4001/p2p/Qm..." value={newRelayPeer} onChange={e => setNewRelayPeer(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleAddRelayPeer()} />
-                      <GlassButton variant="secondary" size="sm" onClick={handleAddRelayPeer} className="text-xs">Add</GlassButton>
-                    </div>
-                  </div>
-
-                  {/* RELAY BUNDLE */}
-                  <div className="border border-white/10 rounded-lg p-3">
-                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-2">RELAY BUNDLE</h3>
-                    <p className="text-[10px] text-text-tertiary mb-2">Update the relay bundle (p2pd binary, relay list) independently from the main app.</p>
-                    <div className="flex gap-2 items-center">
-                      <GlassButton variant="secondary" size="sm" onClick={handleCheckBundleUpdate} className="text-xs">Check Update</GlassButton>
-                      <GlassButton variant="primary" size="sm" onClick={handleUpdateBundle} className="text-xs">Update Bundle</GlassButton>
-                    </div>
-                    {relayBundleStatus && <p className="text-[10px] text-text-tertiary mt-2">{relayBundleStatus}</p>}
-                  </div>
-                </>
-              )}
-            </GlassCard>
-
-            {/* =========================================================== */}
-            {/* Endpoints Panel */}
-            {/* =========================================================== */}
-            <GlassCard className="p-4 mt-4">
-              <button
-                onClick={() => { togglePanel('endpoints'); if (collapsedPanels.endpoints) loadEndpoints(); }}
-                className="w-full flex items-center justify-between text-left"
-              >
-                <h2 className="text-lg font-display text-text-primary">🔌 Endpoints</h2>
                 <span className={`text-text-tertiary transition-transform ${collapsedPanels.endpoints ? '' : 'rotate-180'}`}>▼</span>
               </button>
 
               {!collapsedPanels.endpoints && (
                 <>
-                  <p className="text-[10px] text-text-tertiary mt-2 mb-4">
-                    Configure network endpoints for BCH nodes, Nostr relays, and indexing services.
-                  </p>
+                  {/* ── RELAY NODE ─────────────────────────────────────── */}
+                  <div className="border border-white/10 rounded-lg p-3 mt-4 mb-4">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-3 flex items-center gap-2">
+                      📡 Relay Node
+                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${relayStatus.running ? 'bg-green-400 shadow-[0_0_6px_#4ade80] animate-pulse' : 'bg-red-500'}`} />
+                      <span className="text-[10px] font-normal normal-case text-text-tertiary">{relayStatus.running ? `Running — ${relayStatus.online_peers}/${relayStatus.peer_count} peers` : 'Stopped'}</span>
+                    </h3>
 
-                  {/* Green terminal-style endpoint fields */}
-                  <div className="font-mono space-y-5">
+                    {relayStatus.running && relayStatus.peer_id && (
+                      <p className="text-[10px] font-mono text-text-tertiary mb-2 truncate">Peer ID: {relayStatus.peer_id}</p>
+                    )}
 
-                    {/* // ENDPOINTS header */}
-                    <p className="text-green-400/60 text-xs">// ENDPOINTS</p>
+                    {/* LOCAL RELAY controls */}
+                    <div className="mb-3">
+                      <label className="flex items-center gap-2 mb-2 cursor-pointer">
+                        <input type="checkbox" className="w-3 h-3 accent-accent-primary" checked={relayPrefs.relay_enabled}
+                          onChange={e => setRelayPrefs(p => ({ ...p, relay_enabled: e.target.checked }))} />
+                        <span className="text-xs text-text-secondary">Enable relay node</span>
+                      </label>
+
+                      <div className="mb-2">
+                        <p className="text-[10px] text-text-tertiary mb-1">p2pd binary path <span className="text-text-tertiary/60">(leave blank = use bundled)</span></p>
+                        <input
+                          type="text"
+                          className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
+                          placeholder="embedded (default)"
+                          value={relayPrefs.p2pd_binary_path || ''}
+                          onChange={e => setRelayPrefs(p => ({ ...p, p2pd_binary_path: e.target.value || null }))}
+                        />
+                      </div>
+
+                      <div className="flex gap-3 mb-2 flex-wrap text-[10px] text-text-tertiary">
+                        <label className="flex items-center gap-1">Port <input type="number" className="w-16 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_listen_port} onChange={e => setRelayPrefs(p => ({ ...p, relay_listen_port: parseInt(e.target.value) || 0 }))} /></label>
+                        <label className="flex items-center gap-1">Max conn <input type="number" className="w-14 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_max_connections} onChange={e => setRelayPrefs(p => ({ ...p, relay_max_connections: parseInt(e.target.value) || 50 }))} /></label>
+                        <label className="flex items-center gap-1">Retention <input type="number" className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_retention_days} onChange={e => setRelayPrefs(p => ({ ...p, relay_retention_days: parseInt(e.target.value) || 7 }))} /> days</label>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <GlassButton variant="primary" size="sm" onClick={handleStartRelay} disabled={relayLoading || relayStatus.running} className="text-xs">▶ Start</GlassButton>
+                        <GlassButton variant="secondary" size="sm" onClick={handleStopRelay} disabled={relayLoading || !relayStatus.running} className="text-xs">■ Stop</GlassButton>
+                      </div>
+                    </div>
+
+                    {/* SEED RELAYS */}
+                    <div className="border-t border-white/5 pt-3 mb-3">
+                      <p className="text-[10px] text-text-tertiary uppercase tracking-wide mb-2">Seed Relays (BitFaced-operated)</p>
+                      <div className="space-y-1">
+                        {[
+                          { label: 'US-East', id: 'QmRelayUS' },
+                          { label: 'EU', id: 'QmRelayEU' },
+                          { label: 'Asia', id: 'QmRelayAS' },
+                        ].map((seed) => {
+                          const live = relayPeers.find(p => p.builtin && p.label?.includes(seed.label));
+                          return (
+                            <div key={seed.id} className="flex items-center gap-2">
+                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${live?.online === true ? 'bg-green-400' : live?.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                              <span className="text-[10px] text-text-secondary">BitFaced {seed.label}</span>
+                              {live?.latency_ms != null && <span className="text-[10px] text-text-tertiary ml-auto">{live.latency_ms}ms</span>}
+                              {live?.online === false && <span className="text-[10px] text-red-400 ml-auto">offline</span>}
+                              {!live && <span className="text-[10px] text-text-tertiary/40 ml-auto">start relay to ping</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* CUSTOM RELAYS */}
+                    <div className="border-t border-white/5 pt-3 mb-3">
+                      <p className="text-[10px] text-text-tertiary uppercase tracking-wide mb-2">Custom Relays</p>
+                      <div className="space-y-1 mb-2">
+                        {relayPeers.filter(p => !p.builtin).map((peer, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peer.online === true ? 'bg-green-400' : peer.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                            <span className="text-[10px] font-mono text-text-secondary truncate flex-1">{peer.multiaddr}</span>
+                            <button onClick={() => handleRemoveRelayPeer(peer.multiaddr)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+                          </div>
+                        ))}
+                        {relayPeers.filter(p => !p.builtin).length === 0 && (
+                          <p className="text-[10px] text-text-tertiary/40 italic">No custom relays added</p>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <input type="text" className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
+                          placeholder="/ip4/.../tcp/4001/p2p/Qm..." value={newRelayPeer} onChange={e => setNewRelayPeer(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && handleAddRelayPeer()} />
+                        <GlassButton variant="secondary" size="sm" onClick={handleAddRelayPeer} className="text-xs">Add</GlassButton>
+                      </div>
+                    </div>
+
+                    {/* RELAY BUNDLE */}
+                    <div className="border-t border-white/5 pt-3">
+                      <p className="text-[10px] text-text-tertiary uppercase tracking-wide mb-2">Relay Bundle</p>
+                      <p className="text-[10px] text-text-tertiary/60 mb-2">Update p2pd binary + relay list independently from the main app.</p>
+                      <div className="flex gap-2 items-center">
+                        <GlassButton variant="secondary" size="sm" onClick={handleCheckBundleUpdate} className="text-xs">Check Update</GlassButton>
+                        <GlassButton variant="primary" size="sm" onClick={handleUpdateBundle} className="text-xs">Update Bundle</GlassButton>
+                      </div>
+                      {relayBundleStatus && <p className="text-[10px] text-text-tertiary mt-2">{relayBundleStatus}</p>}
+                    </div>
+                  </div>
+
+                  {/* ── NETWORK ENDPOINTS ──────────────────────────────── */}
+                  <div className="font-mono space-y-4">
+                    <p className="text-green-400/60 text-xs">// NETWORK ENDPOINTS</p>
 
                     <div>
                       <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">FULCRUM / ELECTRUM NODES</p>
                       <textarea
-                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900 focus:outline-none focus:border-green-700 resize-none"
-                        rows={4}
+                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900/50 focus:outline-none focus:border-green-700 resize-none"
+                        rows={5}
+                        placeholder={"wss://bch.imaginary.cash:50004\nwss://electroncash.de:50004"}
                         value={endpointPrefs.fulcrum_nodes.join('\n')}
                         onChange={e => { setEndpointPrefs(p => ({ ...p, fulcrum_nodes: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
                       />
@@ -3132,36 +3130,18 @@ export const SettingsTab: React.FC = () => {
                     <div>
                       <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">NOSTR RELAYS</p>
                       <textarea
-                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900 focus:outline-none focus:border-green-700 resize-none"
+                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900/50 focus:outline-none focus:border-green-700 resize-none"
                         rows={4}
+                        placeholder={"wss://relay.damus.io\nwss://nos.lol"}
                         value={endpointPrefs.nostr_relays.join('\n')}
                         onChange={e => { setEndpointPrefs(p => ({ ...p, nostr_relays: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
                       />
-                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line</p>
+                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line — used as Nostr transport fallback</p>
                     </div>
-
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">CAULDRON INDEXER</p>
-                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
-                        value={endpointPrefs.cauldron_indexer} onChange={e => { setEndpointPrefs(p => ({ ...p, cauldron_indexer: e.target.value })); setEndpointsDirty(true); }} />
-                    </div>
-
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">THORCHAIN MIDGARD</p>
-                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
-                        value={endpointPrefs.thorchain_midgard} onChange={e => { setEndpointPrefs(p => ({ ...p, thorchain_midgard: e.target.value })); setEndpointsDirty(true); }} />
-                    </div>
-
-                    <div>
-                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">META / ICON SERVICE</p>
-                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
-                        value={endpointPrefs.meta_icon_service} onChange={e => { setEndpointPrefs(p => ({ ...p, meta_icon_service: e.target.value })); setEndpointsDirty(true); }} />
-                    </div>
-
                   </div>
 
                   {/* RESET / CANCEL / SAVE */}
-                  <div className="flex items-center justify-between mt-6 pt-4 border-t border-white/5">
+                  <div className="flex items-center justify-between mt-5 pt-4 border-t border-white/5">
                     <div>
                       {endpointSaveMsg && <p className="text-[10px] text-text-tertiary">{endpointSaveMsg}</p>}
                       {!endpointSaveMsg && <p className="text-[10px] text-text-tertiary/40">changes apply on page reload</p>}

@@ -132,9 +132,6 @@ class EndpointPreferences:
         "wss://relay.primal.net",
         "wss://nostr-pub.wellorder.net",
     ])
-    cauldron_indexer: str = "https://indexer.riften.net"
-    thorchain_midgard: str = "https://midgard.ninerealms.com/v2"
-    meta_icon_service: str = "https://meta.riften.net"
 
 
 @dataclass
@@ -285,9 +282,6 @@ class UserPreferences:
             prefs.endpoints = EndpointPreferences(
                 fulcrum_nodes=ep.get('fulcrum_nodes', EndpointPreferences().fulcrum_nodes),
                 nostr_relays=ep.get('nostr_relays', EndpointPreferences().nostr_relays),
-                cauldron_indexer=ep.get('cauldron_indexer', "https://indexer.riften.net"),
-                thorchain_midgard=ep.get('thorchain_midgard', "https://midgard.ninerealms.com/v2"),
-                meta_icon_service=ep.get('meta_icon_service', "https://meta.riften.net"),
             )
 
         return prefs

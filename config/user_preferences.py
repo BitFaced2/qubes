@@ -127,10 +127,6 @@ class EndpointPreferences:
         "wss://nos.lol",
         "wss://relay.nostr.band",
         "wss://relay.snort.social",
-        "wss://nostr.wine",
-        "wss://relay.current.fyi",
-        "wss://relay.primal.net",
-        "wss://nostr-pub.wellorder.net",
     ])
 
 

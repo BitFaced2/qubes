@@ -5245,6 +5245,46 @@ Write ONLY the introduction message itself, nothing else."""
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def check_endpoints(self, user_id: str) -> Dict[str, Any]:
+        """Ping all configured Fulcrum and Nostr endpoints via real WebSocket handshake."""
+        import asyncio
+
+        async def _wss_reachable(url: str, timeout: float = 6.0) -> bool:
+            """Open a WebSocket connection and immediately close it — confirms WSS is up."""
+            try:
+                import websockets
+                async with asyncio.timeout(timeout):
+                    async with websockets.connect(url, open_timeout=timeout, close_timeout=2) as ws:
+                        await ws.close()
+                return True
+            except Exception:
+                return False
+
+        try:
+            prefs = self.orchestrator.preferences_manager.get_endpoint_preferences()
+            fulcrum = prefs.fulcrum_nodes or []
+            nostr = prefs.nostr_relays or []
+
+            fulcrum_results, nostr_results = await asyncio.gather(
+                asyncio.gather(*[_wss_reachable(u) for u in fulcrum]),
+                asyncio.gather(*[_wss_reachable(u) for u in nostr]),
+            )
+            return {
+                "success": True,
+                "fulcrum": {
+                    "connected": sum(fulcrum_results),
+                    "total": len(fulcrum),
+                    "status": list(fulcrum_results),
+                },
+                "nostr": {
+                    "connected": sum(nostr_results),
+                    "total": len(nostr),
+                    "status": list(nostr_results),
+                },
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def send_introduction(self, qube_id: str, to_commitment: str, message: str, password: str) -> Dict[str, Any]:
         """Send an introduction request to another Qube"""
         try:
@@ -15271,6 +15311,11 @@ async def main():
             user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
             password = get_secret("password", argv_index=3)
             result = await user_bridge.reset_endpoint_preferences(user_id, password)
+            print(json.dumps(result))
+
+        elif command == "check-endpoints":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.check_endpoints(user_id)
             print(json.dumps(result))
 
         elif command == "send-introduction":

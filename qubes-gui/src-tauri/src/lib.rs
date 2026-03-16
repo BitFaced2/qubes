@@ -5380,6 +5380,14 @@ async fn reset_endpoint_preferences(app_handle: AppHandle, user_id: String, pass
     sidecar_execute_with_retry("reset-endpoint-preferences", args, secrets, Some(&app_handle), None).await
 }
 
+/// Ping all configured Fulcrum + Nostr endpoints and return connected counts
+#[tauri::command]
+async fn check_endpoints(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("check-endpoints", args, HashMap::new(), Some(&app_handle), None).await
+}
+
 /// Send an introduction request to another Qube
 #[tauri::command]
 async fn send_introduction(app_handle: AppHandle,
@@ -8076,6 +8084,7 @@ pub fn run() {
             get_endpoint_preferences,
             update_endpoint_preferences,
             reset_endpoint_preferences,
+            check_endpoints,
             // Setup Wizard
             get_bundle_dir,
             check_first_run,

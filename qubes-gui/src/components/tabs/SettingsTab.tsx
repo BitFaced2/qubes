@@ -284,15 +284,16 @@ export const SettingsTab: React.FC = () => {
       'wss://nos.lol',
       'wss://relay.nostr.band',
       'wss://relay.snort.social',
-      'wss://nostr.wine',
-      'wss://relay.current.fyi',
-      'wss://relay.primal.net',
-      'wss://nostr-pub.wellorder.net',
     ],
   });
   const [endpointsDirty, setEndpointsDirty] = useState(false);
   const [savingEndpoints, setSavingEndpoints] = useState(false);
   const [endpointSaveMsg, setEndpointSaveMsg] = useState<string | null>(null);
+  const [endpointConnStatus, setEndpointConnStatus] = useState<{
+    fulcrum: { connected: number; total: number; status: boolean[] };
+    nostr: { connected: number; total: number; status: boolean[] };
+  } | null>(null);
+  const [checkingConn, setCheckingConn] = useState(false);
 
   const loadRelayData = async () => {
     try {
@@ -354,6 +355,17 @@ export const SettingsTab: React.FC = () => {
       const res = await invoke<any>('get_endpoint_preferences', { userId });
       if (res?.endpoints) setEndpointPrefs(res.endpoints);
     } catch {}
+  };
+
+  const checkEndpointConn = async () => {
+    setCheckingConn(true);
+    try {
+      const res = await invoke<any>('check_endpoints', { userId });
+      if (res?.success !== false) {
+        setEndpointConnStatus({ fulcrum: res.fulcrum, nostr: res.nostr });
+      }
+    } catch {}
+    setCheckingConn(false);
   };
 
   const handleSaveEndpoints = async () => {
@@ -544,9 +556,9 @@ export const SettingsTab: React.FC = () => {
     }
   }, [userId]);
 
-  // Load endpoints on mount
+  // Load endpoints on mount and check connectivity
   useEffect(() => {
-    if (userId) loadEndpoints();
+    if (userId) { loadEndpoints(); checkEndpointConn(); }
   }, [userId]);
 
   // Listen for Ollama pull progress events
@@ -2998,7 +3010,7 @@ export const SettingsTab: React.FC = () => {
             {/* =========================================================== */}
             <GlassCard className="p-4 mt-4">
               <button
-                onClick={() => { togglePanel('endpoints'); if (collapsedPanels.endpoints) { loadRelayData(); loadEndpoints(); } }}
+                onClick={() => { togglePanel('endpoints'); if (collapsedPanels.endpoints) { loadRelayData(); loadEndpoints(); checkEndpointConn(); } }}
                 className="w-full flex items-center justify-between text-left"
               >
                 <h2 className="text-lg font-display text-text-primary flex items-center gap-2">
@@ -3113,30 +3125,72 @@ export const SettingsTab: React.FC = () => {
 
                   {/* ── NETWORK ENDPOINTS ──────────────────────────────── */}
                   <div className="font-mono space-y-4">
-                    <p className="text-green-400/60 text-xs">// NETWORK ENDPOINTS</p>
+                    <div className="flex items-center justify-between">
+                      <p className="text-green-400/60 text-xs">// NETWORK ENDPOINTS</p>
+                      <button onClick={checkEndpointConn} disabled={checkingConn}
+                        className="text-[10px] text-green-700 hover:text-green-500 disabled:opacity-40">
+                        {checkingConn ? 'checking...' : '↻ ping all'}
+                      </button>
+                    </div>
 
                     <div>
-                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">FULCRUM / ELECTRUM NODES</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] uppercase tracking-widest text-green-400/70">FULCRUM / ELECTRUM NODES</p>
+                        {endpointConnStatus && (
+                          <span className={`text-[10px] font-mono font-semibold ${endpointConnStatus.fulcrum.connected === endpointConnStatus.fulcrum.total ? 'text-green-400' : endpointConnStatus.fulcrum.connected > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {endpointConnStatus.fulcrum.connected}/{endpointConnStatus.fulcrum.total}
+                          </span>
+                        )}
+                        {checkingConn && !endpointConnStatus && <span className="text-[10px] text-green-900">pinging…</span>}
+                      </div>
+                      {/* per-line status dots overlay — shown after ping */}
+                      {endpointConnStatus && (
+                        <div className="mb-1 space-y-0.5">
+                          {endpointPrefs.fulcrum_nodes.map((url, i) => (
+                            <div key={i} className="flex items-center gap-1.5">
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${endpointConnStatus.fulcrum.status[i] === true ? 'bg-green-400' : endpointConnStatus.fulcrum.status[i] === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                              <span className="text-[9px] text-green-400/60 truncate">{url}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900/50 focus:outline-none focus:border-green-700 resize-none"
                         rows={5}
                         placeholder={"wss://bch.imaginary.cash:50004\nwss://electroncash.de:50004"}
                         value={endpointPrefs.fulcrum_nodes.join('\n')}
-                        onChange={e => { setEndpointPrefs(p => ({ ...p, fulcrum_nodes: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
+                        onChange={e => { setEndpointPrefs(p => ({ ...p, fulcrum_nodes: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); setEndpointConnStatus(null); }}
                       />
-                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line</p>
+                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line — connects to all simultaneously</p>
                     </div>
 
                     <div>
-                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">NOSTR RELAYS</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-[10px] uppercase tracking-widest text-green-400/70">NOSTR RELAYS</p>
+                        {endpointConnStatus && (
+                          <span className={`text-[10px] font-mono font-semibold ${endpointConnStatus.nostr.connected === endpointConnStatus.nostr.total ? 'text-green-400' : endpointConnStatus.nostr.connected > 0 ? 'text-yellow-400' : 'text-red-400'}`}>
+                            {endpointConnStatus.nostr.connected}/{endpointConnStatus.nostr.total}
+                          </span>
+                        )}
+                      </div>
+                      {endpointConnStatus && (
+                        <div className="mb-1 space-y-0.5">
+                          {endpointPrefs.nostr_relays.map((url, i) => (
+                            <div key={i} className="flex items-center gap-1.5">
+                              <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${endpointConnStatus.nostr.status[i] === true ? 'bg-green-400' : endpointConnStatus.nostr.status[i] === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                              <span className="text-[9px] text-green-400/60 truncate">{url}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900/50 focus:outline-none focus:border-green-700 resize-none"
                         rows={4}
                         placeholder={"wss://relay.damus.io\nwss://nos.lol"}
                         value={endpointPrefs.nostr_relays.join('\n')}
-                        onChange={e => { setEndpointPrefs(p => ({ ...p, nostr_relays: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
+                        onChange={e => { setEndpointPrefs(p => ({ ...p, nostr_relays: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); setEndpointConnStatus(null); }}
                       />
-                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line — used as Nostr transport fallback</p>
+                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line — connects to all, used as Nostr transport fallback</p>
                     </div>
                   </div>
 

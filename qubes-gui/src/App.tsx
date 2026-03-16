@@ -548,7 +548,6 @@ function App() {
         {/* Title Bar */}
         <div className="h-8 flex items-center justify-between px-4 bg-bg-quaternary border-b border-glass-border">
           <span className="text-sm font-display text-accent-primary">QUBES ({qubes.length} loaded)</span>
-          <TotalBalanceWidget qubes={qubes} userId={userId || ''} password={password || ''} />
           <div className="flex items-center gap-3 text-xs">
             <span className="text-accent-primary flex items-center gap-1">
               <span>👤</span>

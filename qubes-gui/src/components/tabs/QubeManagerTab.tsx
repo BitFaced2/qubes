@@ -135,6 +135,57 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
 
   // Pinata configuration check
   const [pinataConfigured, setPinataConfigured] = useState<boolean | null>(null);
+
+  // Total balance widget state
+  const { wallets: walletCache, setBalance: setCachedBalanceGlobal } = useWalletCache();
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false);
+  const [showSweepAllModal, setShowSweepAllModal] = useState(false);
+  const [sweepAllAddress, setSweepAllAddress] = useState('');
+  const [isSweepingAll, setIsSweepingAll] = useState(false);
+  const [sweepAllResult, setSweepAllResult] = useState<string | null>(null);
+
+  const totalSats = qubes.reduce((sum, q) => sum + (walletCache[q.qube_id]?.balance ?? 0), 0);
+  const hasAnyBalance = qubes.some((q) => (walletCache[q.qube_id]?.balance ?? 0) > 0);
+
+  const handleRefreshAllBalances = async () => {
+    if (isRefreshingAll || !userId || !masterPassword) return;
+    setIsRefreshingAll(true);
+    try {
+      await Promise.all(
+        qubes.filter((q) => q.wallet_address).map(async (q) => {
+          try {
+            const result = await invoke<{ success?: boolean; balance_sats?: number }>('get_wallet_info', {
+              userId, qubeId: q.qube_id, password: masterPassword,
+            });
+            if (result.balance_sats !== undefined) setCachedBalanceGlobal(q.qube_id, result.balance_sats);
+          } catch { /* ignore per-qube errors */ }
+        })
+      );
+    } finally {
+      setIsRefreshingAll(false);
+    }
+  };
+
+  const handleSweepAll = async () => {
+    if (!sweepAllAddress || !userId || !masterPassword) return;
+    setIsSweepingAll(true);
+    setSweepAllResult(null);
+    let totalSwept = 0;
+    const errors: string[] = [];
+    for (const q of qubes.filter((q) => q.wallet_address && (walletCache[q.qube_id]?.balance ?? 0) > 0)) {
+      try {
+        const result = await invoke<{ success: boolean; swept_sats: number; error?: string }>('sweep_qube_wallet', {
+          userId, qubeId: q.qube_id, sweepAddress: sweepAllAddress, password: masterPassword,
+        });
+        if (result.success) { totalSwept += result.swept_sats; setCachedBalanceGlobal(q.qube_id, 0); }
+        else errors.push(`${q.name}: ${result.error}`);
+      } catch (err) { errors.push(`${q.name}: ${String(err)}`); }
+    }
+    setSweepAllResult(errors.length === 0
+      ? `✓ Swept ${(totalSwept / 1e8).toFixed(8)} BCH from ${qubes.length} qubes`
+      : `Swept ${(totalSwept / 1e8).toFixed(8)} BCH. Errors: ${errors.join('; ')}`);
+    setIsSweepingAll(false);
+  };
   const [walletQubes, setWalletQubes] = useState<Array<{
     qube_id: string;
     qube_name: string;
@@ -872,6 +923,65 @@ export const QubeManagerTab: React.FC<QubeManagerTabProps> = ({
           >
             Restore
           </GlassButton>
+          {/* Total Balance Widget */}
+          <div className="flex items-stretch border border-glass-border rounded-lg overflow-hidden bg-glass-bg backdrop-blur-glass">
+            <div className="px-3 py-1 flex flex-col justify-center min-w-[120px]">
+              <span className="text-[9px] text-text-tertiary uppercase tracking-wider">Total Balance</span>
+              <span className={`font-mono text-xs font-bold ${hasAnyBalance ? 'text-accent-primary' : 'text-text-disabled'}`}>
+                {isRefreshingAll ? '...' : `${(totalSats / 1e8).toFixed(8)} BCH`}
+              </span>
+            </div>
+            <button
+              onClick={handleRefreshAllBalances}
+              disabled={isRefreshingAll}
+              title="Refresh all balances"
+              className="px-2 border-l border-glass-border text-text-tertiary hover:text-accent-primary transition-colors disabled:opacity-40"
+            >
+              {isRefreshingAll ? '⟳' : '↻'}
+            </button>
+            {!showSweepAllModal ? (
+              <button
+                onClick={() => { if (hasAnyBalance) setShowSweepAllModal(true); }}
+                disabled={!hasAnyBalance || isSweepingAll}
+                title={hasAnyBalance ? 'Sweep all balances to one address' : 'No balance to sweep'}
+                className={`px-2 border-l border-glass-border text-xs font-medium transition-colors ${
+                  hasAnyBalance
+                    ? 'text-accent-primary hover:bg-accent-primary/10 cursor-pointer'
+                    : 'text-text-disabled cursor-not-allowed'
+                }`}
+              >
+                ↓ Sweep
+              </button>
+            ) : (
+              <div className="flex items-center gap-1 px-2 border-l border-glass-border">
+                <input
+                  type="text"
+                  value={sweepAllAddress}
+                  onChange={(e) => setSweepAllAddress(e.target.value)}
+                  placeholder="bitcoincash:q..."
+                  className="bg-transparent text-[10px] text-text-primary placeholder:text-text-disabled font-mono focus:outline-none w-40"
+                  autoFocus
+                />
+                <button
+                  onClick={handleSweepAll}
+                  disabled={!sweepAllAddress || isSweepingAll}
+                  className="text-[10px] px-1.5 py-0.5 rounded bg-accent-primary/20 text-accent-primary disabled:opacity-40"
+                >
+                  {isSweepingAll ? '...' : '✓'}
+                </button>
+                <button
+                  onClick={() => { setShowSweepAllModal(false); setSweepAllAddress(''); setSweepAllResult(null); }}
+                  className="text-[10px] text-text-tertiary hover:text-text-primary"
+                >✕</button>
+              </div>
+            )}
+          </div>
+          {sweepAllResult && (
+            <div className={`text-xs px-2 py-1 rounded ${sweepAllResult.startsWith('✓') ? 'text-green-400 bg-green-400/10' : 'text-red-400 bg-red-400/10'}`}>
+              {sweepAllResult}
+            </div>
+          )}
+
           <GlassButton variant="primary" onClick={onCreateQube}>
             + New Qube
           </GlassButton>
@@ -1986,6 +2096,38 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
   const [walletBalance, setWalletBalance] = useState<number | null>(cachedWalletData?.balance ?? null);  // P2SH wallet
   const [walletBalanceLoading, setWalletBalanceLoading] = useState(false);
   const [walletBalanceError, setWalletBalanceError] = useState<string | null>(cachedWalletData?.error ?? null);
+  const [showSweepModal, setShowSweepModal] = useState(false);
+  const [sweepAddress, setSweepAddress] = useState('');
+  const [sweepPassword, setSweepPassword] = useState('');
+  const [isSweeping, setIsSweeping] = useState(false);
+  const [sweepResult, setSweepResult] = useState<string | null>(null);
+
+  const handleSweep = async () => {
+    if (!sweepAddress || !userId || !masterPassword) return;
+    setIsSweeping(true);
+    setSweepResult(null);
+    try {
+      const result = await invoke<{ success: boolean; swept_sats: number; error?: string }>('sweep_qube_wallet', {
+        userId,
+        qubeId: qube.qube_id,
+        sweepAddress,
+        password: sweepPassword || masterPassword,
+      });
+      if (result.success) {
+        const bch = (result.swept_sats / 1e8).toFixed(8);
+        setSweepResult(`✓ Swept ${bch} BCH`);
+        setWalletBalance(0);
+        setCachedBalance(qube.qube_id, 0);
+        setSweepAddress('');
+      } else {
+        setSweepResult(`✗ ${result.error || 'Sweep failed'}`);
+      }
+    } catch (err) {
+      setSweepResult(`✗ ${String(err)}`);
+    } finally {
+      setIsSweeping(false);
+    }
+  };
 
   // Custom voices now come from VoiceLibraryContext (see useVoiceLibrary hook above)
 
@@ -3372,6 +3514,51 @@ const QubeCard: React.FC<QubeCardProps> = ({ qube, allQubes, onEdit, onDelete, o
                     </span>
                   )}
                 </div>
+
+                {/* Sweep button — active only when balance > 0 */}
+                {!showSweepModal ? (
+                  <button
+                    onClick={() => { if ((walletBalance ?? 0) > 0) setShowSweepModal(true); }}
+                    disabled={(walletBalance ?? 0) === 0 || walletBalanceLoading}
+                    className={`w-full mt-1.5 py-1 rounded text-[10px] font-medium transition-colors ${
+                      (walletBalance ?? 0) > 0
+                        ? 'bg-accent-primary/20 text-accent-primary hover:bg-accent-primary/30 cursor-pointer'
+                        : 'bg-glass-bg text-text-disabled cursor-not-allowed'
+                    }`}
+                  >
+                    ↓ Sweep Funds
+                  </button>
+                ) : (
+                  <div className="mt-2 p-2 rounded-lg bg-bg-primary/60 border border-glass-border text-xs">
+                    <input
+                      type="text"
+                      value={sweepAddress}
+                      onChange={(e) => setSweepAddress(e.target.value)}
+                      placeholder="bitcoincash:q..."
+                      className="w-full bg-bg-primary border border-glass-border rounded px-2 py-1 text-text-primary placeholder:text-text-disabled font-mono text-[10px] mb-1 focus:outline-none"
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        onClick={handleSweep}
+                        disabled={!sweepAddress || isSweeping}
+                        className="flex-1 py-0.5 rounded bg-accent-primary/20 text-accent-primary hover:bg-accent-primary/30 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                      >
+                        {isSweeping ? 'Sweeping...' : 'Confirm Sweep'}
+                      </button>
+                      <button
+                        onClick={() => { setShowSweepModal(false); setSweepAddress(''); setSweepResult(null); }}
+                        className="px-2 py-0.5 rounded bg-glass-bg text-text-tertiary hover:text-text-primary"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                    {sweepResult && (
+                      <p className={`mt-1 text-[10px] ${sweepResult.startsWith('✓') ? 'text-green-400' : 'text-red-400'}`}>
+                        {sweepResult}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

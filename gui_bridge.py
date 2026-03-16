@@ -12619,6 +12619,20 @@ async def main():
             result = await user_bridge.uninstall_gpu_acceleration(user_id)
             print(json.dumps(result))
 
+        elif command == "sweep-qube-wallet":
+            if len(sys.argv) < 5:
+                print(json.dumps({"error": "user_id, qube_id, sweep_address required"}), file=sys.stderr)
+                sys.exit(1)
+            user_id = sys.argv[2]
+            qube_id = sys.argv[3]
+            sweep_address = sys.argv[4]
+            password = sys.argv[5] if len(sys.argv) > 5 else None
+            user_bridge = GUIBridge(user_id=user_id)
+            if password:
+                user_bridge.orchestrator.set_master_key(password)
+            swept_sats = await user_bridge.orchestrator._sweep_before_delete(qube_id, password, sweep_address)
+            print(json.dumps({"success": True, "swept_sats": swept_sats or 0}))
+
         elif command == "check-local-tts-models":
             if len(sys.argv) < 3:
                 print(json.dumps({"error": "User ID required"}), file=sys.stderr)

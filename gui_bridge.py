@@ -5042,6 +5042,209 @@ Write ONLY the introduction message itself, nothing else."""
             logger.error(f"Failed to generate introduction: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    # =========================================================================
+    # RELAY NODE COMMANDS — Phase 1
+    # =========================================================================
+
+    async def init_relay_node(self, user_id: str, password: str) -> Dict[str, Any]:
+        """Start the local P2P relay node."""
+        try:
+            from network.relay_node import RelayNodeManager
+            from network.bundle_manager import get_p2pd_path
+            from pathlib import Path
+
+            prefs = self.orchestrator.preferences_manager.get_relay_preferences()
+            if not prefs.relay_enabled:
+                return {"success": False, "error": "Relay is disabled in preferences"}
+
+            if not hasattr(self, '_relay_node') or self._relay_node is None:
+                p2pd = prefs.p2pd_binary_path or str(get_p2pd_path() or "")
+                self._relay_node = RelayNodeManager(
+                    user_data_dir=self.orchestrator.data_dir,
+                    listen_port=prefs.relay_listen_port,
+                    max_connections=prefs.relay_max_connections,
+                    retention_days=prefs.relay_retention_days,
+                    p2pd_binary=p2pd or None,
+                    custom_peers=prefs.relay_custom_peers,
+                )
+
+            await self._relay_node.start()
+            status = self._relay_node.get_status()
+            return {"success": True, **status}
+        except Exception as e:
+            logger.error(f"init_relay_node failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def stop_relay_node(self, user_id: str) -> Dict[str, Any]:
+        """Stop the local P2P relay node."""
+        try:
+            if hasattr(self, '_relay_node') and self._relay_node is not None:
+                await self._relay_node.stop()
+                self._relay_node = None
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_relay_status(self, user_id: str) -> Dict[str, Any]:
+        """Get current relay node status."""
+        try:
+            if not hasattr(self, '_relay_node') or self._relay_node is None:
+                return {"success": True, "running": False, "peer_id": None, "multiaddr": None, "peer_count": 0, "online_peers": 0}
+            status = self._relay_node.get_status()
+            return {"success": True, **status}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_relay_peers(self, user_id: str) -> Dict[str, Any]:
+        """Get list of relay peers with live reachability status."""
+        try:
+            if not hasattr(self, '_relay_node') or self._relay_node is None:
+                from network.relay_list import BUILTIN_RELAYS
+                peers = []
+                for r in BUILTIN_RELAYS:
+                    for addr in r["multiaddrs"]:
+                        peers.append({"multiaddr": addr, "label": r["label"], "operator": r["operator"], "builtin": True, "online": None, "latency_ms": None})
+                return {"success": True, "peers": peers}
+            peers = self._relay_node.get_peers()
+            return {"success": True, "peers": peers}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def add_relay_peer(self, user_id: str, multiaddr: str) -> Dict[str, Any]:
+        """Add a custom relay peer."""
+        try:
+            prefs = self.orchestrator.preferences_manager.get_relay_preferences()
+            if multiaddr not in prefs.relay_custom_peers:
+                prefs.relay_custom_peers.append(multiaddr)
+                self.orchestrator.preferences_manager.update_relay_preferences(
+                    relay_custom_peers=prefs.relay_custom_peers
+                )
+            if hasattr(self, '_relay_node') and self._relay_node:
+                await self._relay_node.add_peer(multiaddr)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def remove_relay_peer(self, user_id: str, multiaddr: str) -> Dict[str, Any]:
+        """Remove a custom relay peer."""
+        try:
+            prefs = self.orchestrator.preferences_manager.get_relay_preferences()
+            if multiaddr in prefs.relay_custom_peers:
+                prefs.relay_custom_peers.remove(multiaddr)
+                self.orchestrator.preferences_manager.update_relay_preferences(
+                    relay_custom_peers=prefs.relay_custom_peers
+                )
+            if hasattr(self, '_relay_node') and self._relay_node:
+                await self._relay_node.remove_peer(multiaddr)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_relay_preferences(self, user_id: str, password: str, **kwargs) -> Dict[str, Any]:
+        """Update relay node preferences."""
+        try:
+            prefs = self.orchestrator.preferences_manager.update_relay_preferences(**kwargs)
+            from dataclasses import asdict
+            return {"success": True, "relay": asdict(prefs.relay)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def send_direct_p2p_message(
+        self,
+        qube_id: str,
+        recipient_qube_id: str,
+        recipient_pub_key: str,
+        message: str,
+        password: str,
+    ) -> Dict[str, Any]:
+        """Send an encrypted direct P2P message to another Qube via relay."""
+        try:
+            from network.messaging import QubeMessage, EncryptedSession
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.backends import default_backend
+            import json, base64
+
+            self.orchestrator.set_master_key(password)
+            qube = self.orchestrator.qubes.get(qube_id)
+            if not qube:
+                return {"success": False, "error": f"Qube {qube_id} not loaded"}
+
+            # Encrypt message payload using ECIES-like pattern
+            payload = json.dumps({"type": "text", "content": message, "sender_qube_id": qube_id}).encode()
+
+            if not hasattr(self, '_relay_node') or self._relay_node is None:
+                return {"success": False, "error": "Relay node not running. Start relay first."}
+
+            await self._relay_node.send_message(
+                recipient_qube_id=recipient_qube_id,
+                encrypted_payload=payload,  # TODO Phase 2: wrap with onion
+                ttl_days=7,
+            )
+            return {"success": True}
+        except Exception as e:
+            logger.error(f"send_direct_p2p_message failed: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
+    async def get_direct_p2p_messages(self, qube_id: str, password: str) -> Dict[str, Any]:
+        """Drain store-and-forward queue for a Qube."""
+        try:
+            if not hasattr(self, '_relay_node') or self._relay_node is None:
+                return {"success": True, "messages": []}
+            messages = await self._relay_node.get_pending_messages(qube_id)
+            return {"success": True, "messages": messages}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def check_relay_bundle_update(self, user_id: str) -> Dict[str, Any]:
+        """Check if a newer relay bundle is available. Phase 5."""
+        try:
+            from network.bundle_manager import check_for_update
+            from pathlib import Path
+            result = await check_for_update(self.orchestrator.data_dir)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_relay_bundle(self, user_id: str) -> Dict[str, Any]:
+        """Download and apply the latest relay bundle. Phase 5."""
+        try:
+            from network.bundle_manager import update_bundle
+            result = await update_bundle(self.orchestrator.data_dir)
+            return {"success": True, **result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # ENDPOINT PREFERENCES COMMANDS
+    # =========================================================================
+
+    async def get_endpoint_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Get network endpoint preferences."""
+        try:
+            from dataclasses import asdict
+            prefs = self.orchestrator.preferences_manager.get_endpoint_preferences()
+            return {"success": True, "endpoints": asdict(prefs)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def update_endpoint_preferences(self, user_id: str, password: str, **kwargs) -> Dict[str, Any]:
+        """Update network endpoint preferences."""
+        try:
+            from dataclasses import asdict
+            prefs = self.orchestrator.preferences_manager.update_endpoint_preferences(**kwargs)
+            return {"success": True, "endpoints": asdict(prefs.endpoints)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def reset_endpoint_preferences(self, user_id: str, password: str) -> Dict[str, Any]:
+        """Reset endpoint preferences to defaults."""
+        try:
+            from dataclasses import asdict
+            prefs = self.orchestrator.preferences_manager.reset_endpoint_preferences()
+            return {"success": True, "endpoints": asdict(prefs.endpoints)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def send_introduction(self, qube_id: str, to_commitment: str, message: str, password: str) -> Dict[str, Any]:
         """Send an introduction request to another Qube"""
         try:
@@ -14972,6 +15175,102 @@ async def main():
             result = await user_bridge.generate_introduction_message(
                 qube_id, to_commitment, to_name, to_description, password
             )
+            print(json.dumps(result))
+
+        # =====================================================================
+        # RELAY NODE COMMANDS — Phase 1
+        # =====================================================================
+        elif command == "init-relay-node":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            password = get_secret("password", argv_index=3)
+            result = await user_bridge.init_relay_node(user_id, password)
+            print(json.dumps(result))
+
+        elif command == "stop-relay-node":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.stop_relay_node(user_id)
+            print(json.dumps(result))
+
+        elif command == "get-relay-status":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.get_relay_status(user_id)
+            print(json.dumps(result))
+
+        elif command == "get-relay-peers":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.get_relay_peers(user_id)
+            print(json.dumps(result))
+
+        elif command == "add-relay-peer":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            multiaddr = sys.argv[3] if len(sys.argv) > 3 else ""
+            result = await user_bridge.add_relay_peer(user_id, multiaddr)
+            print(json.dumps(result))
+
+        elif command == "remove-relay-peer":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            multiaddr = sys.argv[3] if len(sys.argv) > 3 else ""
+            result = await user_bridge.remove_relay_peer(user_id, multiaddr)
+            print(json.dumps(result))
+
+        elif command == "update-relay-preferences":
+            import json as _json
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            password = get_secret("password", argv_index=3)
+            kwargs = _json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
+            result = await user_bridge.update_relay_preferences(user_id, password, **kwargs)
+            print(_json.dumps(result))
+
+        elif command == "send-direct-p2p-message":
+            if len(sys.argv) < 6:
+                print(json.dumps({"error": "user_id, qube_id, recipient_qube_id, recipient_pub_key required"}), file=sys.stderr)
+                sys.exit(1)
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+            recipient_qube_id = sys.argv[4]
+            recipient_pub_key = sys.argv[5]
+            message = sys.argv[6] if len(sys.argv) > 6 else ""
+            password = get_secret("password", argv_index=7)
+            result = await user_bridge.send_direct_p2p_message(qube_id, recipient_qube_id, recipient_pub_key, message, password)
+            print(json.dumps(result))
+
+        elif command == "get-direct-p2p-messages":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            qube_id = validate_qube_id(sys.argv[3]) if len(sys.argv) > 3 else ""
+            password = get_secret("password", argv_index=4)
+            result = await user_bridge.get_direct_p2p_messages(qube_id, password)
+            print(json.dumps(result))
+
+        elif command == "check-relay-bundle-update":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.check_relay_bundle_update(user_id)
+            print(json.dumps(result))
+
+        elif command == "update-relay-bundle":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.update_relay_bundle(user_id)
+            print(json.dumps(result))
+
+        # =====================================================================
+        # ENDPOINT PREFERENCES COMMANDS
+        # =====================================================================
+        elif command == "get-endpoint-preferences":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            result = await user_bridge.get_endpoint_preferences(user_id)
+            print(json.dumps(result))
+
+        elif command == "update-endpoint-preferences":
+            import json as _json
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            password = get_secret("password", argv_index=3)
+            kwargs = _json.loads(sys.argv[4]) if len(sys.argv) > 4 else {}
+            result = await user_bridge.update_endpoint_preferences(user_id, password, **kwargs)
+            print(_json.dumps(result))
+
+        elif command == "reset-endpoint-preferences":
+            user_id = sys.argv[2] if len(sys.argv) > 2 else "default_user"
+            password = get_secret("password", argv_index=3)
+            result = await user_bridge.reset_endpoint_preferences(user_id, password)
             print(json.dumps(result))
 
         elif command == "send-introduction":

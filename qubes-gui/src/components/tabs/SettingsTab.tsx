@@ -77,6 +77,40 @@ interface MemoryConfig {
   relationship_weight: number;
 }
 
+interface RelayPeer {
+  multiaddr: string;
+  label: string;
+  operator: string;
+  builtin: boolean;
+  online: boolean | null;
+  latency_ms: number | null;
+}
+
+interface RelayStatus {
+  running: boolean;
+  peer_id: string | null;
+  multiaddr: string | null;
+  peer_count: number;
+  online_peers: number;
+}
+
+interface RelayPreferences {
+  relay_enabled: boolean;
+  relay_listen_port: number;
+  relay_max_connections: number;
+  relay_retention_days: number;
+  relay_custom_peers: string[];
+  p2pd_binary_path: string | null;
+}
+
+interface EndpointPreferences {
+  fulcrum_nodes: string[];
+  nostr_relays: string[];
+  cauldron_indexer: string;
+  thorchain_midgard: string;
+  meta_icon_service: string;
+}
+
 export const SettingsTab: React.FC = () => {
   const { userId, password, autoLockEnabled, autoLockTimeout, setAutoLockSettings } = useAuth();
   const { invalidateCache, loadChainState } = useChainState();
@@ -225,7 +259,104 @@ export const SettingsTab: React.FC = () => {
     security: true,
     celebrationSettings: true,
     softwareUpdates: true,
+    relayNode: true,
+    endpoints: true,
   });
+
+  // Relay Node state
+  const [relayStatus, setRelayStatus] = useState<RelayStatus>({ running: false, peer_id: null, multiaddr: null, peer_count: 0, online_peers: 0 });
+  const [relayPeers, setRelayPeers] = useState<RelayPeer[]>([]);
+  const [relayPrefs, setRelayPrefs] = useState<RelayPreferences>({ relay_enabled: true, relay_listen_port: 0, relay_max_connections: 50, relay_retention_days: 7, relay_custom_peers: [], p2pd_binary_path: null });
+  const [relayLoading, setRelayLoading] = useState(false);
+  const [relayBundleStatus, setRelayBundleStatus] = useState<string | null>(null);
+  const [newRelayPeer, setNewRelayPeer] = useState('');
+
+  // Endpoints state
+  const [endpointPrefs, setEndpointPrefs] = useState<EndpointPreferences>({ fulcrum_nodes: [], nostr_relays: [], cauldron_indexer: '', thorchain_midgard: '', meta_icon_service: '' });
+  const [endpointsDirty, setEndpointsDirty] = useState(false);
+  const [savingEndpoints, setSavingEndpoints] = useState(false);
+  const [endpointSaveMsg, setEndpointSaveMsg] = useState<string | null>(null);
+
+  const loadRelayData = async () => {
+    try {
+      const [statusRes, peersRes] = await Promise.all([
+        invoke<any>('get_relay_status', { userId }),
+        invoke<any>('get_relay_peers', { userId }),
+      ]);
+      if (statusRes?.success !== false) setRelayStatus(statusRes);
+      if (peersRes?.success !== false && peersRes?.peers) setRelayPeers(peersRes.peers);
+    } catch {}
+  };
+
+  const handleStartRelay = async () => {
+    setRelayLoading(true);
+    try {
+      const res = await invoke<any>('init_relay_node', { userId, password });
+      if (res?.success !== false) { setRelayStatus({ ...relayStatus, running: true, ...res }); }
+    } catch {}
+    setRelayLoading(false);
+    await loadRelayData();
+  };
+
+  const handleStopRelay = async () => {
+    setRelayLoading(true);
+    try { await invoke('stop_relay_node', { userId }); setRelayStatus(s => ({ ...s, running: false, peer_id: null, multiaddr: null })); } catch {}
+    setRelayLoading(false);
+  };
+
+  const handleAddRelayPeer = async () => {
+    if (!newRelayPeer.trim()) return;
+    await invoke('add_relay_peer', { userId, multiaddr: newRelayPeer.trim() });
+    setNewRelayPeer('');
+    await loadRelayData();
+  };
+
+  const handleRemoveRelayPeer = async (multiaddr: string) => {
+    await invoke('remove_relay_peer', { userId, multiaddr });
+    await loadRelayData();
+  };
+
+  const handleCheckBundleUpdate = async () => {
+    setRelayBundleStatus('Checking...');
+    try {
+      const res = await invoke<any>('check_relay_bundle_update', { userId });
+      setRelayBundleStatus(res?.update_available ? `Update available: ${res.latest_version}` : `Up to date (${res?.current_version || 'none'})`);
+    } catch (e: any) { setRelayBundleStatus(`Error: ${e}`); }
+  };
+
+  const handleUpdateBundle = async () => {
+    setRelayBundleStatus('Updating...');
+    try {
+      const res = await invoke<any>('update_relay_bundle', { userId });
+      setRelayBundleStatus(res?.message || (res?.success ? 'Updated!' : 'Failed'));
+    } catch (e: any) { setRelayBundleStatus(`Error: ${e}`); }
+  };
+
+  const loadEndpoints = async () => {
+    try {
+      const res = await invoke<any>('get_endpoint_preferences', { userId });
+      if (res?.endpoints) setEndpointPrefs(res.endpoints);
+    } catch {}
+  };
+
+  const handleSaveEndpoints = async () => {
+    setSavingEndpoints(true);
+    setEndpointSaveMsg(null);
+    try {
+      const prefs_json = JSON.stringify(endpointPrefs);
+      await invoke('update_endpoint_preferences', { userId, password, prefsJson: prefs_json });
+      setEndpointsDirty(false);
+      setEndpointSaveMsg('Saved — changes apply on page reload');
+    } catch (e: any) { setEndpointSaveMsg(`Error: ${e}`); }
+    setSavingEndpoints(false);
+  };
+
+  const handleResetEndpoints = async () => {
+    try {
+      const res = await invoke<any>('reset_endpoint_preferences', { userId, password });
+      if (res?.endpoints) { setEndpointPrefs(res.endpoints); setEndpointsDirty(false); setEndpointSaveMsg('Reset to defaults — changes apply on page reload'); }
+    } catch {}
+  };
 
   const handleChangePassword = async () => {
     setChangePwError(null);
@@ -2840,6 +2971,211 @@ export const SettingsTab: React.FC = () => {
                 </>
               )}
             </GlassCard>
+            {/* =========================================================== */}
+            {/* Relay Node Panel */}
+            {/* =========================================================== */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => { togglePanel('relayNode'); if (collapsedPanels.relayNode) loadRelayData(); }}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary flex items-center gap-2">
+                  📡 Relay Node
+                  {/* live status dot */}
+                  <span className={`inline-block w-2 h-2 rounded-full ${relayStatus.running ? 'bg-green-400 shadow-[0_0_6px_#4ade80]' : 'bg-red-500'}`} />
+                </h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.relayNode ? '' : 'rotate-180'}`}>▼</span>
+              </button>
+
+              {!collapsedPanels.relayNode && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mt-2 mb-4">
+                    Your desktop app automatically acts as a P2P relay node. Every user who runs Qubes contributes relay capacity to the network — no configuration required.
+                  </p>
+
+                  {/* LOCAL RELAY */}
+                  <div className="border border-white/10 rounded-lg p-3 mb-4">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-3">LOCAL RELAY</h3>
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className={`w-3 h-3 rounded-full flex-shrink-0 ${relayStatus.running ? 'bg-green-400 shadow-[0_0_6px_#4ade80] animate-pulse' : 'bg-red-500'}`} />
+                      <span className="text-xs text-text-secondary">{relayStatus.running ? 'Running' : 'Stopped'}</span>
+                      {relayStatus.running && relayStatus.peer_count !== undefined && (
+                        <span className="text-[10px] text-text-tertiary ml-auto">{relayStatus.online_peers}/{relayStatus.peer_count} peers online</span>
+                      )}
+                    </div>
+
+                    {relayStatus.running && relayStatus.peer_id && (
+                      <div className="mb-2">
+                        <p className="text-[10px] text-text-tertiary">Peer ID</p>
+                        <p className="text-xs font-mono text-text-secondary truncate">{relayStatus.peer_id}</p>
+                      </div>
+                    )}
+
+                    <label className="flex items-center gap-2 mb-3 cursor-pointer">
+                      <input type="checkbox" className="w-3 h-3 accent-accent-primary" checked={relayPrefs.relay_enabled}
+                        onChange={e => setRelayPrefs(p => ({ ...p, relay_enabled: e.target.checked }))} />
+                      <span className="text-xs text-text-secondary">Enable relay node</span>
+                    </label>
+
+                    {/* p2pd binary path */}
+                    <div className="mb-3">
+                      <p className="text-[10px] text-text-tertiary mb-1">p2pd binary path <span className="text-text-tertiary/60">(leave blank = use bundled)</span></p>
+                      <input
+                        type="text"
+                        className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
+                        placeholder="embedded (default)"
+                        value={relayPrefs.p2pd_binary_path || ''}
+                        onChange={e => setRelayPrefs(p => ({ ...p, p2pd_binary_path: e.target.value || null }))}
+                      />
+                    </div>
+
+                    <div className="flex gap-2 mb-3 flex-wrap text-[10px] text-text-tertiary">
+                      <label className="flex items-center gap-1">Port <input type="number" className="w-16 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_listen_port} onChange={e => setRelayPrefs(p => ({ ...p, relay_listen_port: parseInt(e.target.value) || 0 }))} /></label>
+                      <label className="flex items-center gap-1">Max connections <input type="number" className="w-14 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_max_connections} onChange={e => setRelayPrefs(p => ({ ...p, relay_max_connections: parseInt(e.target.value) || 50 }))} /></label>
+                      <label className="flex items-center gap-1">Retention <input type="number" className="w-10 bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs font-mono text-text-primary" value={relayPrefs.relay_retention_days} onChange={e => setRelayPrefs(p => ({ ...p, relay_retention_days: parseInt(e.target.value) || 7 }))} /> days</label>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <GlassButton variant="primary" size="sm" onClick={handleStartRelay} disabled={relayLoading || relayStatus.running} className="text-xs">▶ Start</GlassButton>
+                      <GlassButton variant="secondary" size="sm" onClick={handleStopRelay} disabled={relayLoading || !relayStatus.running} className="text-xs">■ Stop</GlassButton>
+                    </div>
+                  </div>
+
+                  {/* REMOTE RELAYS */}
+                  <div className="border border-white/10 rounded-lg p-3 mb-4">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-3">REMOTE RELAYS</h3>
+
+                    {/* Seed relays */}
+                    <p className="text-[10px] text-text-tertiary mb-2">SEED RELAYS (BitFaced-operated)</p>
+                    <div className="space-y-1 mb-4">
+                      {relayPeers.filter(p => p.builtin).slice(0, 3).map((peer, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peer.online === true ? 'bg-green-400' : peer.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                          <span className="text-[10px] font-mono text-text-secondary truncate flex-1">{peer.label}</span>
+                          {peer.latency_ms !== null && <span className="text-[10px] text-text-tertiary">{peer.latency_ms}ms</span>}
+                          {peer.online === false && <span className="text-[10px] text-red-400">offline</span>}
+                        </div>
+                      ))}
+                      {relayPeers.filter(p => p.builtin).length === 0 && (
+                        <p className="text-[10px] text-text-tertiary italic">Open the relay to see seed relay status</p>
+                      )}
+                    </div>
+
+                    {/* Custom relays */}
+                    <p className="text-[10px] text-text-tertiary mb-2">CUSTOM RELAYS</p>
+                    <div className="space-y-1 mb-2">
+                      {relayPeers.filter(p => !p.builtin).map((peer, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${peer.online === true ? 'bg-green-400' : peer.online === false ? 'bg-red-500' : 'bg-white/20'}`} />
+                          <span className="text-[10px] font-mono text-text-secondary truncate flex-1">{peer.multiaddr}</span>
+                          <button onClick={() => handleRemoveRelayPeer(peer.multiaddr)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input type="text" className="flex-1 bg-black/40 border border-white/10 rounded px-2 py-1 text-xs font-mono text-text-primary placeholder-text-tertiary/40 focus:outline-none focus:border-accent-primary/50"
+                        placeholder="/ip4/.../tcp/4001/p2p/Qm..." value={newRelayPeer} onChange={e => setNewRelayPeer(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && handleAddRelayPeer()} />
+                      <GlassButton variant="secondary" size="sm" onClick={handleAddRelayPeer} className="text-xs">Add</GlassButton>
+                    </div>
+                  </div>
+
+                  {/* RELAY BUNDLE */}
+                  <div className="border border-white/10 rounded-lg p-3">
+                    <h3 className="text-xs font-semibold text-text-primary uppercase tracking-wide mb-2">RELAY BUNDLE</h3>
+                    <p className="text-[10px] text-text-tertiary mb-2">Update the relay bundle (p2pd binary, relay list) independently from the main app.</p>
+                    <div className="flex gap-2 items-center">
+                      <GlassButton variant="secondary" size="sm" onClick={handleCheckBundleUpdate} className="text-xs">Check Update</GlassButton>
+                      <GlassButton variant="primary" size="sm" onClick={handleUpdateBundle} className="text-xs">Update Bundle</GlassButton>
+                    </div>
+                    {relayBundleStatus && <p className="text-[10px] text-text-tertiary mt-2">{relayBundleStatus}</p>}
+                  </div>
+                </>
+              )}
+            </GlassCard>
+
+            {/* =========================================================== */}
+            {/* Endpoints Panel */}
+            {/* =========================================================== */}
+            <GlassCard className="p-4 mt-4">
+              <button
+                onClick={() => { togglePanel('endpoints'); if (collapsedPanels.endpoints) loadEndpoints(); }}
+                className="w-full flex items-center justify-between text-left"
+              >
+                <h2 className="text-lg font-display text-text-primary">🔌 Endpoints</h2>
+                <span className={`text-text-tertiary transition-transform ${collapsedPanels.endpoints ? '' : 'rotate-180'}`}>▼</span>
+              </button>
+
+              {!collapsedPanels.endpoints && (
+                <>
+                  <p className="text-[10px] text-text-tertiary mt-2 mb-4">
+                    Configure network endpoints for BCH nodes, Nostr relays, and indexing services.
+                  </p>
+
+                  {/* Green terminal-style endpoint fields */}
+                  <div className="font-mono space-y-5">
+
+                    {/* // ENDPOINTS header */}
+                    <p className="text-green-400/60 text-xs">// ENDPOINTS</p>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">FULCRUM / ELECTRUM NODES</p>
+                      <textarea
+                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900 focus:outline-none focus:border-green-700 resize-none"
+                        rows={4}
+                        value={endpointPrefs.fulcrum_nodes.join('\n')}
+                        onChange={e => { setEndpointPrefs(p => ({ ...p, fulcrum_nodes: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
+                      />
+                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line</p>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">NOSTR RELAYS</p>
+                      <textarea
+                        className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 placeholder-green-900 focus:outline-none focus:border-green-700 resize-none"
+                        rows={4}
+                        value={endpointPrefs.nostr_relays.join('\n')}
+                        onChange={e => { setEndpointPrefs(p => ({ ...p, nostr_relays: e.target.value.split('\n').filter(l => l.trim()) })); setEndpointsDirty(true); }}
+                      />
+                      <p className="text-[9px] text-green-900/80 mt-0.5">one wss:// URL per line</p>
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">CAULDRON INDEXER</p>
+                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
+                        value={endpointPrefs.cauldron_indexer} onChange={e => { setEndpointPrefs(p => ({ ...p, cauldron_indexer: e.target.value })); setEndpointsDirty(true); }} />
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">THORCHAIN MIDGARD</p>
+                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
+                        value={endpointPrefs.thorchain_midgard} onChange={e => { setEndpointPrefs(p => ({ ...p, thorchain_midgard: e.target.value })); setEndpointsDirty(true); }} />
+                    </div>
+
+                    <div>
+                      <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1">META / ICON SERVICE</p>
+                      <input type="text" className="w-full bg-black/40 border border-green-900/60 rounded px-3 py-2 text-xs font-mono text-green-400 focus:outline-none focus:border-green-700"
+                        value={endpointPrefs.meta_icon_service} onChange={e => { setEndpointPrefs(p => ({ ...p, meta_icon_service: e.target.value })); setEndpointsDirty(true); }} />
+                    </div>
+
+                  </div>
+
+                  {/* RESET / CANCEL / SAVE */}
+                  <div className="flex items-center justify-between mt-6 pt-4 border-t border-white/5">
+                    <div>
+                      {endpointSaveMsg && <p className="text-[10px] text-text-tertiary">{endpointSaveMsg}</p>}
+                      {!endpointSaveMsg && <p className="text-[10px] text-text-tertiary/40">changes apply on page reload</p>}
+                    </div>
+                    <div className="flex gap-2">
+                      <GlassButton variant="danger" size="sm" onClick={handleResetEndpoints} disabled={savingEndpoints} className="text-xs">RESET</GlassButton>
+                      <GlassButton variant="secondary" size="sm" onClick={() => { setEndpointsDirty(false); setEndpointSaveMsg(null); loadEndpoints(); }} disabled={savingEndpoints} className="text-xs">CANCEL</GlassButton>
+                      <GlassButton variant="primary" size="sm" onClick={handleSaveEndpoints} disabled={savingEndpoints || !endpointsDirty} className="text-xs font-semibold">SAVE</GlassButton>
+                    </div>
+                  </div>
+                </>
+              )}
+            </GlassCard>
+
           </div>
         </div>
       </div>

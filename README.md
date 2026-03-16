@@ -42,9 +42,53 @@ Qubes are AI agents you genuinely own. Each Qube has a cryptographic identity mi
 │  Category: c9054d53dcc075dd7226ea319f20d43d │
 │            f102371149311c9239f6c0ea1200b80f  │
 └─────────────────────────────────────────────┘
+
+                (parallel stack — no message data ever on-chain)
+┌─────────────────────────────────────────────┐
+│  Relay Layer                                │
+│  Qubes P2P Relay Protocol                   │
+│  Kademlia DHT  ·  Noise encryption          │
+│  2-hop onion routing  ·  Store-and-forward  │
+│  Nostr fallback (Phase 3)                   │
+└───────────────┬─────────────────────────────┘
+                │  transport-agnostic
+┌───────────────▼─────────────────────────────┐
+│  Transport Drivers  (updatable bundle)      │
+│  TCP/WS  ·  QUIC  ·  BLE  ·  LoRa  ·  I2P │
+└─────────────────────────────────────────────┘
 ```
 
-The desktop app is one implementation of the protocol. The SDK is the protocol itself.
+The desktop app is one implementation of the protocol. The SDK is the protocol itself. The relay layer is a completely separate stack — no message content, metadata, or communication graph ever touches the BCH blockchain.
+
+---
+
+## P2P Relay
+
+Qubes includes a private peer-to-peer messaging relay for cross-Qube communication. It is transport-agnostic, metadata-private, and requires no central server.
+
+Every Qubes desktop installation automatically runs a lightweight relay node. Nodes find each other through a Kademlia DHT seeded by a built-in list of community relays — the same pattern Electron Cash uses for Fulcrum servers. Messages route through 2-hop onion encryption (Phase 2) so relay operators cannot determine who is communicating with whom.
+
+When a recipient is offline, their nearest DHT neighbors hold the encrypted message for up to 7 days. Messages are purged immediately after delivery. Conversation history is stored locally inside the Qube's signed memory chain, not on relays.
+
+**Transport fallback waterfall** (automatic, no user action required):
+
+```
+Priority 1  Local relay          User's own desktop relay node
+Priority 2  Internet DHT         Kademlia routing, Noise-encrypted
+Priority 3  Nostr fallback       Phase 3 — ephemeral keys + NIP-44 encryption
+Priority 4  LoRa / BLE mesh      Phase 6 — extreme offline, no internet needed
+```
+
+**Running a dedicated relay node** (for community relay operators):
+
+```bash
+cd relay
+npm run relay:start                                   # production, port 4001
+npm run relay:dev                                     # verbose logging
+npm run relay:start -- --port 4001 --max-connections 200 --retention-days 7
+```
+
+Every Qubes desktop user already contributes relay capacity just by running the app. Dedicated relay nodes are for always-on community infrastructure, like running a BCH full node.
 
 ---
 
@@ -56,7 +100,7 @@ The desktop app is one implementation of the protocol. The SDK is the protocol i
 npm install @qubesai/sdk
 ```
 
-**8 modules:** `types` · `crypto` · `wallet` · `blocks` · `covenant` · `package` · `bcmr` · `storage`
+**10 modules:** `types` · `crypto` · `wallet` · `blocks` · `covenant` · `package` · `bcmr` · `storage` · `relay` · `nostr`
 
 ### Quick example — generate an identity
 

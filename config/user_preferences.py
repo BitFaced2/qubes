@@ -95,6 +95,49 @@ class Qwen3Preferences:
 
 
 @dataclass
+class RelayPreferences:
+    """Preferences for the P2P relay node."""
+
+    relay_enabled: bool = True
+    relay_listen_port: int = 0                        # 0 = auto-assign
+    relay_max_connections: int = 50
+    relay_retention_days: int = 7
+    relay_custom_peers: List[str] = field(default_factory=list)
+    p2pd_binary_path: Optional[str] = None            # None = use bundled binary
+
+
+@dataclass
+class EndpointPreferences:
+    """Preferences for network endpoint configuration."""
+
+    fulcrum_nodes: List[str] = field(default_factory=lambda: [
+        # Well-known public Fulcrum / Electrum BCH servers (same pre-load as Electron Cash)
+        "wss://bch.imaginary.cash:50004",
+        "wss://electroncash.de:50004",
+        "wss://bch.loping.net:50004",
+        "wss://blackie.c3-soft.com:50004",
+        "wss://electroncash.dk:50002",
+        "wss://electron.jochen-hoenicke.de:51002",
+        "wss://bitcoincash.network:50004",
+        "wss://bch.soul-dev.com:50002",
+    ])
+    nostr_relays: List[str] = field(default_factory=lambda: [
+        # Well-known public Nostr relays (used as Phase 3 transport fallback)
+        "wss://relay.damus.io",
+        "wss://nos.lol",
+        "wss://relay.nostr.band",
+        "wss://relay.snort.social",
+        "wss://nostr.wine",
+        "wss://relay.current.fyi",
+        "wss://relay.primal.net",
+        "wss://nostr-pub.wellorder.net",
+    ])
+    cauldron_indexer: str = "https://indexer.riften.net"
+    thorchain_midgard: str = "https://midgard.ninerealms.com/v2"
+    meta_icon_service: str = "https://meta.riften.net"
+
+
+@dataclass
 class OnboardingPreferences:
     """Track tutorial completion per tab."""
 
@@ -166,6 +209,8 @@ class UserPreferences:
     decision: DecisionConfig
     onboarding: OnboardingPreferences
     qwen3: Qwen3Preferences
+    relay: RelayPreferences
+    endpoints: EndpointPreferences
 
     def __init__(self):
         self.blocks = BlockPreferences()
@@ -174,6 +219,8 @@ class UserPreferences:
         self.decision = DecisionConfig()
         self.onboarding = OnboardingPreferences()
         self.qwen3 = Qwen3Preferences()
+        self.relay = RelayPreferences()
+        self.endpoints = EndpointPreferences()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert preferences to dictionary."""
@@ -190,6 +237,8 @@ class UserPreferences:
             'decision': asdict(self.decision),
             'onboarding': asdict(self.onboarding),
             'qwen3': qwen3_dict,
+            'relay': asdict(self.relay),
+            'endpoints': asdict(self.endpoints),
         }
 
     @classmethod
@@ -218,6 +267,27 @@ class UserPreferences:
                 model_variant=qwen3_data.get('model_variant', '1.7B'),
                 use_flash_attention=qwen3_data.get('use_flash_attention', True),
                 voice_library=qwen3_data.get('voice_library', {}),
+            )
+
+        if 'relay' in data:
+            relay_data = data['relay']
+            prefs.relay = RelayPreferences(
+                relay_enabled=relay_data.get('relay_enabled', True),
+                relay_listen_port=relay_data.get('relay_listen_port', 0),
+                relay_max_connections=relay_data.get('relay_max_connections', 50),
+                relay_retention_days=relay_data.get('relay_retention_days', 7),
+                relay_custom_peers=relay_data.get('relay_custom_peers', []),
+                p2pd_binary_path=relay_data.get('p2pd_binary_path', None),
+            )
+
+        if 'endpoints' in data:
+            ep = data['endpoints']
+            prefs.endpoints = EndpointPreferences(
+                fulcrum_nodes=ep.get('fulcrum_nodes', EndpointPreferences().fulcrum_nodes),
+                nostr_relays=ep.get('nostr_relays', EndpointPreferences().nostr_relays),
+                cauldron_indexer=ep.get('cauldron_indexer', "https://indexer.riften.net"),
+                thorchain_midgard=ep.get('thorchain_midgard', "https://midgard.ninerealms.com/v2"),
+                meta_icon_service=ep.get('meta_icon_service', "https://meta.riften.net"),
             )
 
         return prefs
@@ -683,6 +753,47 @@ class UserPreferencesManager:
         if use_flash_attention is not None:
             prefs.qwen3.use_flash_attention = use_flash_attention
 
+        self.save_preferences(prefs)
+        return prefs
+
+    # =========================================================================
+    # RELAY PREFERENCES
+    # =========================================================================
+
+    def get_relay_preferences(self) -> RelayPreferences:
+        """Get relay node preferences."""
+        return self.load_preferences().relay
+
+    def update_relay_preferences(self, **kwargs) -> UserPreferences:
+        """Update relay node preferences."""
+        prefs = self.load_preferences()
+        for key, value in kwargs.items():
+            if hasattr(prefs.relay, key):
+                setattr(prefs.relay, key, value)
+        self.save_preferences(prefs)
+        return prefs
+
+    # =========================================================================
+    # ENDPOINT PREFERENCES
+    # =========================================================================
+
+    def get_endpoint_preferences(self) -> EndpointPreferences:
+        """Get network endpoint preferences."""
+        return self.load_preferences().endpoints
+
+    def update_endpoint_preferences(self, **kwargs) -> UserPreferences:
+        """Update network endpoint preferences."""
+        prefs = self.load_preferences()
+        for key, value in kwargs.items():
+            if hasattr(prefs.endpoints, key):
+                setattr(prefs.endpoints, key, value)
+        self.save_preferences(prefs)
+        return prefs
+
+    def reset_endpoint_preferences(self) -> UserPreferences:
+        """Reset endpoint preferences to defaults."""
+        prefs = self.load_preferences()
+        prefs.endpoints = EndpointPreferences()
         self.save_preferences(prefs)
         return prefs
 

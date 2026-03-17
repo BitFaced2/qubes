@@ -5846,6 +5846,26 @@ Respond naturally as yourself ({qube.name}). Be conversational and engaging."""
             logger.error(f"Failed to create P2P session: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    async def create_supervised_session(self, user_id: str, qube_id: str, owner_commitments: str, local_qubes: str, remote_commitments: str, topic: str, password: str) -> Dict[str, Any]:
+        """Create a supervised session - thin wrapper over create_p2p_session with mode=supervised."""
+        # Combine remote_commitments + owner_commitments (deduplicated)
+        all_remote = list(dict.fromkeys(
+            [c.strip() for c in remote_commitments.split(',') if c.strip()] +
+            [c.strip() for c in owner_commitments.split(',') if c.strip()]
+        ))
+        local_qube_ids = [q.strip() for q in local_qubes.split(',') if q.strip()]
+        result = await self.create_p2p_session(
+            qube_id=qube_id,
+            local_qube_ids=local_qube_ids,
+            remote_commitments=all_remote,
+            topic=topic or 'supervised',
+            password=password
+        )
+        if result.get('success'):
+            result['session_mode'] = 'supervised'
+            result['owner_commitments'] = owner_commitments
+        return result
+
     async def get_p2p_sessions(self, qube_id: str, password: str) -> Dict[str, Any]:
         """Get P2P sessions for a Qube"""
         import aiohttp
@@ -15477,6 +15497,42 @@ async def main():
                 remote_commitments,
                 args.topic,
                 password
+            )
+            print(json.dumps(result))
+
+        elif command == "create-supervised-session":
+            if len(sys.argv) < 4:
+                print(json.dumps({"error": "User ID and Qube ID required"}), file=sys.stderr)
+                sys.exit(1)
+
+            user_id = sys.argv[2]
+            qube_id = validate_qube_id(sys.argv[3])
+
+            import argparse
+            parser = argparse.ArgumentParser()
+            parser.add_argument("command")
+            parser.add_argument("user_id")
+            parser.add_argument("qube_id")
+            parser.add_argument("--owner-commitments", default="")
+            parser.add_argument("--local-qubes", default="")
+            parser.add_argument("--remote-commitments", default="")
+            parser.add_argument("--topic", default="supervised")
+            parser.add_argument("--password", required=True)
+
+            args = parser.parse_args()
+
+            # Use stdin secret if available, fall back to argparse
+            password = get_secret("password", required=False) or args.password
+
+            user_bridge = GUIBridge(user_id=user_id)
+            result = await user_bridge.create_supervised_session(
+                user_id=user_id,
+                qube_id=qube_id,
+                owner_commitments=args.owner_commitments,
+                local_qubes=args.local_qubes,
+                remote_commitments=args.remote_commitments,
+                topic=args.topic,
+                password=password
             )
             print(json.dumps(result))
 

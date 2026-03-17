@@ -230,6 +230,7 @@ POSITIONAL_ARG_NAMES = {
     "reject-introduction": ["user_id", "qube_id", "relay_id"],
     "get-connections": ["user_id", "qube_id"],
     "create-p2p-session": ["user_id", "qube_id"],
+    "create-supervised-session": ["user_id", "qube_id", "owner_commitments", "local_qubes", "remote_commitments", "topic", "password"],
     "get-p2p-sessions": ["user_id", "qube_id"],
     # Pre-bridge
     "create-user-account": ["user_id"],

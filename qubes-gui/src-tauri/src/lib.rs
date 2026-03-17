@@ -5531,9 +5531,43 @@ async fn create_p2p_session(app_handle: AppHandle,
 
 }
 
+/// Create a supervised session (owner group chat wrapper over create_p2p_session)
+#[tauri::command]
+async fn create_supervised_session(app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    owner_commitments: String,
+    local_qubes: String,
+    remote_commitments: String,
+    topic: String,
+    password: String,
+) -> Result<P2PSessionResponse, String> {
+
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+
+    let args = vec![
+        user_id,
+        qube_id,
+        "--owner-commitments".to_string(), owner_commitments,
+        "--local-qubes".to_string(), local_qubes,
+        "--remote-commitments".to_string(), remote_commitments,
+        "--topic".to_string(), topic,
+    ];
+
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+
+    let result = sidecar_execute_with_retry("create-supervised-session", args, secrets, Some(&app_handle), None).await?;
+
+    serde_json::from_value(result)
+        .map_err(|e| format!("Failed to parse create-supervised-session response: {}", e))
+
+}
+
 /// Get P2P sessions for a Qube
 #[tauri::command]
-async fn get_p2p_sessions(app_handle: AppHandle, 
+async fn get_p2p_sessions(app_handle: AppHandle,
     user_id: String,
     qube_id: String,
     password: String,
@@ -8062,6 +8096,7 @@ pub fn run() {
             reject_introduction,
             get_connections,
             create_p2p_session,
+            create_supervised_session,
             get_p2p_sessions,
             // P2P Conversations (uses same logic as local multi-qube)
             start_p2p_conversation,

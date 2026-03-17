@@ -6,6 +6,8 @@ import { GlassButton } from '../glass/GlassButton';
 import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
 import { Connection } from '../connections';
+import { SupervisedChatSetup } from './SupervisedChatSetup';
+import { SupervisedChatInterface } from './SupervisedChatInterface';
 
 interface P2PChatInterfaceProps {
   selectedQubes: Qube[];  // Local qubes to participate
@@ -39,6 +41,11 @@ const API_BASE = 'https://qube.cash/api/v2';
 
 export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQubes, allQubes, onBack }) => {
   const { userId, password } = useAuth();
+
+  // Session type state
+  const [sessionType, setSessionType] = useState<'standard' | 'supervised'>('standard');
+  // Owner commitments for supervised sessions
+  const [ownerCommitments, setOwnerCommitments] = useState<string[]>([]);
 
   // State
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -343,6 +350,145 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
     }
   };
 
+  // Start supervised session
+  const handleStartSupervisedSession = async (
+    selectedOwnerCommitments: string[],
+    localQubeIds: string[]
+  ) => {
+    if (!primaryQube || !userId || !password || selectedOwnerCommitments.length === 0) {
+      setError('Please select at least one owner');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Combine all remote commitments (owner commitments + any extra local qubes selected)
+      const allRemoteCommitments = [...selectedOwnerCommitments];
+
+      // Build local qubes list: primaryQube + any additional localQubeIds selected
+      const allLocalQubeIds = [
+        primaryQube.qube_id,
+        ...localQubeIds.filter(id => id !== primaryQube.qube_id),
+        ...selectedQubes.map(q => q.qube_id).filter(id => id !== primaryQube.qube_id),
+      ].filter((id, idx, arr) => arr.indexOf(id) === idx);
+
+      const result = await invoke<{
+        success: boolean;
+        session_id?: string;
+        participants?: any[];
+        error?: string;
+      }>(
+        'create_supervised_session',
+        {
+          userId,
+          qubeId: primaryQube.qube_id,
+          ownerCommitments: selectedOwnerCommitments.join(','),
+          localQubes: allLocalQubeIds.join(','),
+          remoteCommitments: allRemoteCommitments.join(','),
+          topic: 'supervised',
+          password,
+        }
+      );
+
+      if (result.success && result.session_id) {
+        const localCommitments = selectedQubes.map(q => q.commitment || '');
+
+        const participants = [
+          ...selectedQubes.map(q => ({
+            commitment: q.commitment || '',
+            name: q.name,
+            is_local: true,
+          })),
+          ...selectedOwnerCommitments
+            .filter(c => !localCommitments.includes(c))
+            .map(commitment => {
+              const conn = connections.find(c => c.commitment === commitment);
+              return {
+                commitment,
+                name: conn?.name || 'Remote Owner',
+                is_local: false,
+              };
+            }),
+        ];
+
+        setOwnerCommitments([
+          // Local owner commitment (primary qube's commitment represents the local owner)
+          primaryQube.commitment || '',
+          ...selectedOwnerCommitments,
+        ].filter((c, idx, arr) => c && arr.indexOf(c) === idx));
+
+        setSession({
+          session_id: result.session_id,
+          participants,
+          state: 'active',
+        });
+
+        connectWebSocket(result.session_id);
+      } else {
+        setError(result.error || 'Failed to create supervised session');
+      }
+    } catch (err) {
+      // Fallback: if create_supervised_session command doesn't exist yet, use create_p2p_session
+      console.warn('create_supervised_session not found, falling back to create_p2p_session:', err);
+      try {
+        const fallbackResult = await invoke<{
+          success: boolean;
+          session_id?: string;
+          participants?: any[];
+          error?: string;
+        }>(
+          'create_p2p_session',
+          {
+            userId,
+            qubeId: primaryQube.qube_id,
+            localQubes: selectedQubes.map(q => q.qube_id).join(','),
+            remoteCommitments: selectedOwnerCommitments.join(','),
+            topic: 'supervised',
+            password,
+          }
+        );
+
+        if (fallbackResult.success && fallbackResult.session_id) {
+          const localCommitments = selectedQubes.map(q => q.commitment || '');
+          const participants = [
+            ...selectedQubes.map(q => ({
+              commitment: q.commitment || '',
+              name: q.name,
+              is_local: true,
+            })),
+            ...selectedOwnerCommitments
+              .filter(c => !localCommitments.includes(c))
+              .map(commitment => {
+                const conn = connections.find(c => c.commitment === commitment);
+                return { commitment, name: conn?.name || 'Remote Owner', is_local: false };
+              }),
+          ];
+
+          setOwnerCommitments([
+            primaryQube.commitment || '',
+            ...selectedOwnerCommitments,
+          ].filter((c, idx, arr) => c && arr.indexOf(c) === idx));
+
+          setSession({
+            session_id: fallbackResult.session_id,
+            participants,
+            state: 'active',
+          });
+
+          connectWebSocket(fallbackResult.session_id);
+        } else {
+          setError(fallbackResult.error || 'Failed to create session');
+        }
+      } catch (fallbackErr) {
+        setError(String(fallbackErr));
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Send message using new backend commands (same logic as local multi-qube)
   const handleSendMessage = async () => {
     // Guard against double-sending (e.g., double-click, Enter key repeat)
@@ -623,7 +769,45 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
               Back to Local
             </GlassButton>
           </div>
+
+          {/* Session type toggle */}
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => setSessionType('standard')}
+              className={`flex-1 px-4 py-2 rounded-l-lg text-sm font-medium transition-all ${
+                sessionType === 'standard'
+                  ? 'bg-accent-primary text-bg-primary'
+                  : 'bg-glass-bg text-text-secondary border border-glass-border hover:text-text-primary'
+              }`}
+            >
+              Qube P2P
+            </button>
+            <button
+              onClick={() => setSessionType('supervised')}
+              className={`flex-1 px-4 py-2 rounded-r-lg text-sm font-medium transition-all ${
+                sessionType === 'supervised'
+                  ? 'bg-accent-secondary text-bg-primary'
+                  : 'bg-glass-bg text-text-secondary border border-glass-border hover:text-text-primary'
+              }`}
+            >
+              Supervised
+            </button>
+          </div>
         </GlassCard>
+
+        {/* Supervised setup */}
+        {sessionType === 'supervised' && (
+          <SupervisedChatSetup
+            selectedQubes={selectedQubes}
+            allQubes={allQubes}
+            onStartSession={handleStartSupervisedSession}
+            onBack={() => setSessionType('standard')}
+            loading={isLoading}
+          />
+        )}
+
+        {/* Standard P2P setup — only show when standard is selected */}
+        {sessionType === 'standard' && (<>
 
         {/* Local Participants */}
         <GlassCard className="p-4 flex-shrink-0">
@@ -740,11 +924,25 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
             {isLoading ? 'Creating Session...' : 'Start P2P Conversation'}
           </GlassButton>
         </GlassCard>
+        </>)}
       </div>
     );
   }
 
-  // Active session view
+  // Active session view — supervised mode
+  if (sessionType === 'supervised' && session) {
+    return (
+      <SupervisedChatInterface
+        selectedQubes={selectedQubes}
+        allQubes={allQubes}
+        session={session}
+        ownerCommitments={ownerCommitments}
+        onLeave={handleLeaveSession}
+      />
+    );
+  }
+
+  // Active session view — standard P2P
   return (
     <div className="flex-1 flex flex-col gap-4 h-full">
       {/* Session Header */}

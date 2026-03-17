@@ -594,3 +594,34 @@ export interface ModelPreferencesResponse {
   autonomous_mode_pool?: string[];
   error?: string;
 }
+
+// =============================================================================
+// SUPERVISED OWNER GROUP CHAT TYPES
+// =============================================================================
+
+export interface OwnerParticipant {
+  primary_commitment: string;  // the Qube commitment they used to join
+  display_name: string;
+  is_local: boolean;
+  is_in_session: boolean;      // true = entered willingly; false = left/disconnected
+  qubes: SupervisedQube[];
+}
+
+export interface SupervisedQube {
+  commitment: string;
+  qube_id: string | null;      // null for remote qubes
+  name: string;
+  is_local: boolean;
+  is_active: boolean;          // false when owner not in session
+  favorite_color?: string;
+}
+
+export interface SupervisedMessage {
+  id: string;
+  sender_type: 'owner' | 'qube';
+  sender_commitment: string;
+  sender_name: string;
+  content: string;
+  timestamp: number;
+  block_number?: number;       // qube messages only (on-chain blocks)
+}

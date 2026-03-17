@@ -10,6 +10,7 @@ import { DiscoveryBrowser } from './DiscoveryBrowser';
 
 interface ConnectionManagerProps {
   qubes: Qube[];
+  selectedQubeOverride?: Qube;  // When provided, bypasses tab-based selection
 }
 
 export interface PendingIntroduction {
@@ -34,7 +35,7 @@ type TabType = 'connections' | 'pending' | 'discover';
 // Stable empty array to avoid infinite loops with Zustand selectors
 const EMPTY_ARRAY: string[] = [];
 
-export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ qubes }) => {
+export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ qubes, selectedQubeOverride }) => {
   const { userId, password } = useAuth();
   const selectedQubeIds = useQubeSelection((state) => state.selectionByTab['connections'] ?? EMPTY_ARRAY);
   const [activeTab, setActiveTab] = useState<TabType>('connections');
@@ -44,8 +45,8 @@ export const ConnectionManager: React.FC<ConnectionManagerProps> = ({ qubes }) =
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Get selected qube (first one if multiple selected)
-  const selectedQube = qubes.find(q => selectedQubeIds.includes(q.qube_id));
+  // Get selected qube: use override if provided, otherwise tab-based selection
+  const selectedQube = selectedQubeOverride ?? qubes.find(q => selectedQubeIds.includes(q.qube_id));
   const isMinted = selectedQube?.nft_category_id && selectedQube.nft_category_id !== 'pending_minting';
 
   // Fetch connections for selected qube

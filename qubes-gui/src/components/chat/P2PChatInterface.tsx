@@ -5,7 +5,7 @@ import { GlassCard } from '../glass/GlassCard';
 import { GlassButton } from '../glass/GlassButton';
 import { Qube } from '../../types';
 import { useAuth } from '../../hooks/useAuth';
-import { Connection } from '../connections';
+import { Connection, ConnectionManager } from '../connections';
 import { SupervisedChatSetup } from './SupervisedChatSetup';
 import { SupervisedChatInterface } from './SupervisedChatInterface';
 
@@ -42,6 +42,8 @@ const API_BASE = 'https://qube.cash/api/v2';
 export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQubes, allQubes, onBack }) => {
   const { userId, password } = useAuth();
 
+  // Sub-view: session setup vs connections/discovery management
+  const [p2pSubView, setP2pSubView] = useState<'session' | 'connections'>('session');
   // Session type state
   const [sessionType, setSessionType] = useState<'standard' | 'supervised'>('standard');
   // Owner commitments for supervised sessions
@@ -759,10 +761,10 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-xl font-display text-text-primary">
-                P2P Conversation
+                P2P Network
               </h2>
               <p className="text-sm text-text-tertiary">
-                Select connections to invite to this conversation
+                {p2pSubView === 'session' ? 'Start a session or manage connections' : 'Discover, connect and manage your network'}
               </p>
             </div>
             <GlassButton variant="secondary" onClick={onBack}>
@@ -770,8 +772,33 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
             </GlassButton>
           </div>
 
-          {/* Session type toggle */}
-          <div className="flex gap-2 mt-4">
+          {/* Sub-view toggle: Session vs Connections */}
+          <div className="flex gap-0 mt-4 rounded-lg overflow-hidden border border-glass-border">
+            <button
+              onClick={() => setP2pSubView('session')}
+              className={`flex-1 px-4 py-2 text-sm font-medium transition-all ${
+                p2pSubView === 'session'
+                  ? 'bg-accent-secondary text-bg-primary'
+                  : 'bg-glass-bg text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              Session
+            </button>
+            <button
+              onClick={() => setP2pSubView('connections')}
+              className={`flex-1 px-4 py-2 text-sm font-medium transition-all border-l border-glass-border ${
+                p2pSubView === 'connections'
+                  ? 'bg-accent-secondary text-bg-primary'
+                  : 'bg-glass-bg text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              Connections
+            </button>
+          </div>
+
+          {/* Session type toggle — only shown in Session sub-view */}
+          {p2pSubView === 'session' && (
+          <div className="flex gap-2 mt-3">
             <button
               onClick={() => setSessionType('standard')}
               className={`flex-1 px-4 py-2 rounded-l-lg text-sm font-medium transition-all ${
@@ -786,14 +813,25 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
               onClick={() => setSessionType('supervised')}
               className={`flex-1 px-4 py-2 rounded-r-lg text-sm font-medium transition-all ${
                 sessionType === 'supervised'
-                  ? 'bg-accent-secondary text-bg-primary'
+                  ? 'bg-accent-secondary/80 text-bg-primary'
                   : 'bg-glass-bg text-text-secondary border border-glass-border hover:text-text-primary'
               }`}
             >
               Supervised
             </button>
           </div>
+          )}
         </GlassCard>
+
+        {/* Connections sub-view — full ConnectionManager */}
+        {p2pSubView === 'connections' && (
+          <div className="flex-1 overflow-hidden">
+            <ConnectionManager qubes={allQubes} selectedQubeOverride={primaryQube} />
+          </div>
+        )}
+
+        {/* Session sub-view wrapper */}
+        {p2pSubView === 'session' && (<>
 
         {/* Supervised setup */}
         {sessionType === 'supervised' && (
@@ -851,9 +889,15 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
               return (
                 <div className="text-center py-8">
                   <p className="text-text-secondary mb-2">No connections yet</p>
-                  <p className="text-sm text-text-tertiary">
-                    Go to the Connect tab to discover and connect with other Qubes
+                  <p className="text-sm text-text-tertiary mb-3">
+                    Discover and connect with other Qubes first.
                   </p>
+                  <button
+                    onClick={() => setP2pSubView('connections')}
+                    className="px-4 py-2 bg-accent-secondary/20 border border-accent-secondary rounded-lg text-accent-secondary hover:bg-accent-secondary/30 transition-colors text-sm"
+                  >
+                    Open Connections
+                  </button>
                 </div>
               );
             }
@@ -924,6 +968,7 @@ export const P2PChatInterface: React.FC<P2PChatInterfaceProps> = ({ selectedQube
             {isLoading ? 'Creating Session...' : 'Start P2P Conversation'}
           </GlassButton>
         </GlassCard>
+        </>)}
         </>)}
       </div>
     );

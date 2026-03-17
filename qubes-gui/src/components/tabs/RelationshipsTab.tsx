@@ -1,17 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Qube } from '../../types';
-import { GlassCard, GlassButton } from '../glass';
+import { GlassCard } from '../glass';
 import { useAuth } from '../../hooks/useAuth';
 import { useRelationshipUpdates } from '../../hooks/useRelationshipUpdates';
 import { useQubeSelection } from '../../hooks/useQubeSelection';
 import { NetworkGraph } from '../NetworkGraph';
 import { RelationshipRadarChart } from '../RelationshipRadarChart';
 import { RelationshipTimelineChart } from '../RelationshipTimelineChart';
-import { PendingRequests } from '../connections/PendingRequests';
-import { ConnectionsList } from '../connections/ConnectionsList';
-import { DiscoveryBrowser } from '../connections/DiscoveryBrowser';
-import { Connection, PendingIntroduction } from '../connections/ConnectionManager';
 import { MetricSection, ClearanceSelector, ClearanceEditModal, TraitManager } from '../relationships';
 
 interface Relationship {
@@ -154,15 +150,7 @@ export const RelationshipsTab: React.FC<RelationshipsTabProps> = ({ qubes }) => 
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedRelationships, setExpandedRelationships] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<'grid' | 'network' | 'connect'>('grid');
-
-  // Connection state (for Connect mode)
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [pendingIntroductions, setPendingIntroductions] = useState<PendingIntroduction[]>([]);
-  const [onlineQubes, setOnlineQubes] = useState<string[]>([]);
-  const [connectLoading, setConnectLoading] = useState(false);
-  const [connectError, setConnectError] = useState<string | null>(null);
-  const [connectSubTab, setConnectSubTab] = useState<'connections' | 'pending' | 'discover'>('connections');
+  const [viewMode, setViewMode] = useState<'grid' | 'network'>('grid');
   const [timelineData, setTimelineData] = useState<Record<string, any[]>>({});
 
   // Clearance/Trait metadata
@@ -319,134 +307,6 @@ export const RelationshipsTab: React.FC<RelationshipsTabProps> = ({ qubes }) => 
   }, [selectedQubeId, userId]);
 
   const selectedQube = qubes.find(q => q.qube_id === selectedQubeId);
-  const isMinted = selectedQube?.nft_category_id && selectedQube.nft_category_id !== 'pending_minting';
-
-  // Connection functions (for Connect mode)
-  const fetchConnections = useCallback(async () => {
-    if (!selectedQube || !userId) return;
-    try {
-      const result = await invoke<{ success: boolean; connections?: Connection[]; error?: string }>(
-        'get_connections',
-        { userId, qubeId: selectedQube.qube_id }
-      );
-      if (result.success && result.connections) {
-        setConnections(result.connections);
-      }
-    } catch (err) {
-      console.error('Failed to fetch connections:', err);
-    }
-  }, [selectedQube, userId]);
-
-  const fetchPendingIntroductions = useCallback(async () => {
-    if (!selectedQube || !userId || !password || !isMinted) return;
-    try {
-      const result = await invoke<{ success: boolean; pending?: PendingIntroduction[]; error?: string }>(
-        'get_pending_introductions',
-        { userId, qubeId: selectedQube.qube_id, password }
-      );
-      if (result.success && result.pending) {
-        setPendingIntroductions(result.pending);
-      }
-    } catch (err) {
-      console.error('Failed to fetch pending introductions:', err);
-    }
-  }, [selectedQube, userId, password, isMinted]);
-
-  const fetchOnlineQubes = useCallback(async () => {
-    if (!userId) return;
-    try {
-      const result = await invoke<{ success: boolean; online?: string[]; error?: string }>(
-        'get_online_qubes',
-        { userId }
-      );
-      if (result.success && result.online) {
-        setOnlineQubes(result.online);
-      }
-    } catch (err) {
-      console.error('Failed to fetch online qubes:', err);
-    }
-  }, [userId]);
-
-  // Load connections when in connect mode
-  useEffect(() => {
-    if (viewMode === 'connect' && selectedQube) {
-      fetchConnections();
-      fetchPendingIntroductions();
-      fetchOnlineQubes();
-
-      // Poll for updates every 30 seconds
-      const interval = setInterval(() => {
-        fetchPendingIntroductions();
-        fetchOnlineQubes();
-      }, 30000);
-
-      return () => clearInterval(interval);
-    }
-  }, [viewMode, selectedQube, fetchConnections, fetchPendingIntroductions, fetchOnlineQubes]);
-
-  const handleAcceptIntroduction = async (relayId: string) => {
-    if (!selectedQube || !userId || !password) return;
-    setConnectLoading(true);
-    setConnectError(null);
-    try {
-      const result = await invoke<{ success: boolean; from_name?: string; error?: string }>(
-        'accept_introduction',
-        { userId, qubeId: selectedQube.qube_id, relayId, password }
-      );
-      if (result.success) {
-        await fetchConnections();
-        await fetchPendingIntroductions();
-      } else {
-        setConnectError(result.error || 'Failed to accept introduction');
-      }
-    } catch (err) {
-      setConnectError(String(err));
-    } finally {
-      setConnectLoading(false);
-    }
-  };
-
-  const handleRejectIntroduction = async (relayId: string) => {
-    if (!selectedQube || !userId || !password) return;
-    setConnectLoading(true);
-    setConnectError(null);
-    try {
-      const result = await invoke<{ success: boolean; error?: string }>(
-        'reject_introduction',
-        { userId, qubeId: selectedQube.qube_id, relayId, password }
-      );
-      if (result.success) {
-        await fetchPendingIntroductions();
-      } else {
-        setConnectError(result.error || 'Failed to reject introduction');
-      }
-    } catch (err) {
-      setConnectError(String(err));
-    } finally {
-      setConnectLoading(false);
-    }
-  };
-
-  const handleSendIntroduction = async (toCommitment: string, message: string) => {
-    if (!selectedQube || !userId || !password) return;
-    setConnectLoading(true);
-    setConnectError(null);
-    try {
-      const result = await invoke<{ success: boolean; relay_id?: string; error?: string }>(
-        'send_introduction',
-        { userId, qubeId: selectedQube.qube_id, toCommitment, message, password }
-      );
-      if (result.success) {
-        setConnectSubTab('pending');
-      } else {
-        setConnectError(result.error || 'Failed to send introduction');
-      }
-    } catch (err) {
-      setConnectError(String(err));
-    } finally {
-      setConnectLoading(false);
-    }
-  };
 
   const toggleRelationship = (entityId: string) => {
     setExpandedRelationships(prev => {
@@ -824,16 +684,6 @@ export const RelationshipsTab: React.FC<RelationshipsTabProps> = ({ qubes }) => 
                 >
                   🌐 Network
                 </button>
-                <button
-                  onClick={() => setViewMode('connect')}
-                  className={`px-3 py-1.5 rounded text-xs transition-colors ${
-                    viewMode === 'connect'
-                      ? 'bg-accent-primary text-white'
-                      : 'bg-glass-bg text-text-tertiary hover:text-text-primary'
-                  }`}
-                >
-                  🔗 Connect
-                </button>
               </div>
             )}
           </div>
@@ -852,86 +702,6 @@ export const RelationshipsTab: React.FC<RelationshipsTabProps> = ({ qubes }) => 
               Choose a qube from the roster to view its relationships
             </p>
           </GlassCard>
-        ) : viewMode === 'connect' ? (
-          /* Connect Mode Content */
-          !isMinted ? (
-            <GlassCard className="p-6 text-center">
-              <h2 className="text-xl font-display text-accent-warning mb-4">
-                NFT Required
-              </h2>
-              <p className="text-text-secondary mb-4">
-                {selectedQube?.name} must be minted as an NFT before connecting with other Qubes.
-              </p>
-              <p className="text-sm text-text-tertiary">
-                Go to the Dashboard tab and click "Mint NFT" to get started.
-              </p>
-            </GlassCard>
-          ) : (
-            <div className="h-full flex flex-col">
-              {/* Connect Error Display */}
-              {connectError && (
-                <div className="mb-4 p-3 bg-accent-danger/20 border border-accent-danger/50 rounded-lg">
-                  <p className="text-accent-danger text-sm">{connectError}</p>
-                </div>
-              )}
-
-              {/* Connect Sub-tabs */}
-              <div className="flex gap-2 mb-4">
-                <GlassButton
-                  variant={connectSubTab === 'connections' ? 'primary' : 'secondary'}
-                  onClick={() => setConnectSubTab('connections')}
-                  className="flex-1"
-                >
-                  Connections ({connections.length})
-                </GlassButton>
-                <GlassButton
-                  variant={connectSubTab === 'pending' ? 'primary' : 'secondary'}
-                  onClick={() => setConnectSubTab('pending')}
-                  className="flex-1"
-                >
-                  Pending ({pendingIntroductions.length})
-                </GlassButton>
-                <GlassButton
-                  variant={connectSubTab === 'discover' ? 'primary' : 'secondary'}
-                  onClick={() => setConnectSubTab('discover')}
-                  className="flex-1"
-                >
-                  Discover
-                </GlassButton>
-              </div>
-
-              {/* Connect Sub-tab Content */}
-              <div className="flex-1 overflow-y-auto">
-                {connectSubTab === 'connections' && (
-                  <ConnectionsList
-                    connections={connections}
-                    onlineQubes={onlineQubes}
-                  />
-                )}
-
-                {connectSubTab === 'pending' && (
-                  <PendingRequests
-                    pending={pendingIntroductions}
-                    onAccept={handleAcceptIntroduction}
-                    onReject={handleRejectIntroduction}
-                    loading={connectLoading}
-                    qubeId={selectedQube!.qube_id}
-                  />
-                )}
-
-                {connectSubTab === 'discover' && (
-                  <DiscoveryBrowser
-                    onSendIntroduction={handleSendIntroduction}
-                    onlineQubes={onlineQubes}
-                    existingConnections={connections.map(c => c.commitment)}
-                    ownCommitment={selectedQube?.commitment || ''}
-                    loading={connectLoading}
-                    qubeId={selectedQube!.qube_id}
-                  />
-                )}
-              </div>
-            </div>
-          )
         ) : loading ? (
           <GlassCard className="p-12 text-center">
             <p className="text-text-secondary">Loading relationships...</p>

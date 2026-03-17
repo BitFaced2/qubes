@@ -10,17 +10,16 @@ import { QubeManagerTab } from './QubeManagerTab';
 import { CreateQubeModal, CreateQubeData } from './CreateQubeModal';
 import { ChatInterface } from '../chat/ChatInterface';
 import { ModelModeIndicator } from '../chat/ModelModeIndicator';
-import { MultiQubeChatInterface } from '../chat/MultiQubeChatInterface';
 import { GroupChatInterface } from '../chat/GroupChatInterface';
+import { P2PChatInterface } from '../chat/P2PChatInterface';
 import { BlocksTab } from './BlocksTab';
 import { RelationshipsTab } from './RelationshipsTab';
 import { SkillsTab } from './SkillsTab';
 import { GamesTab } from './GamesTab';
 import { SettingsTab } from './SettingsTab';
 import { EarningsTab } from './EarningsTab';
-import { Connection } from '../connections';
 
-type ChatMode = 'local' | 'p2p';
+type ChatMode = 'local' | 'group' | 'p2p';
 
 // Stable empty array to avoid infinite loops with Zustand selectors
 const EMPTY_ARRAY: string[] = [];
@@ -42,8 +41,6 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   const [deleteSweepAddress, setDeleteSweepAddress] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // P2P mode state
-  const [p2pConnections, setP2pConnections] = useState<Connection[]>([]);
 
   // Get selection for current tab
   const selectedQubeIds = useQubeSelection((state) => state.selectionByTab[state.currentTab] ?? EMPTY_ARRAY);
@@ -55,31 +52,6 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
   // Get Blocks selection specifically (for BlocksTab to persist across tab switches)
   const blocksSelection = useQubeSelection((state) => state.selectionByTab['blocks'] ?? EMPTY_ARRAY);
 
-  // Fetch connections when P2P mode is selected
-  useEffect(() => {
-    const fetchConnections = async () => {
-      if (chatMode !== 'p2p' || !userId || qubes.length === 0) return;
-
-      // Get connections from first selected qube (or first qube)
-      const primaryQube = qubes.find(q => dashboardSelection.includes(q.qube_id)) || qubes[0];
-      if (!primaryQube) return;
-
-      try {
-        const result = await invoke<{ success: boolean; connections?: Connection[]; error?: string }>(
-          'get_connections',
-          { userId, qubeId: primaryQube.qube_id }
-        );
-
-        if (result.success && result.connections) {
-          setP2pConnections(result.connections);
-        }
-      } catch (err) {
-        console.error('Failed to fetch connections:', err);
-      }
-    };
-
-    fetchConnections();
-  }, [chatMode, userId, qubes, dashboardSelection]);
 
   // Chat messages for "Recall Last" feature
   const { addMessage } = useChatMessages();
@@ -311,6 +283,16 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
                 Local
               </button>
               <button
+                onClick={() => setChatMode('group')}
+                className={`px-4 py-1.5 text-sm font-medium transition-all border-t border-b ${
+                  chatMode === 'group'
+                    ? 'bg-accent-primary text-bg-primary border-accent-primary'
+                    : 'bg-glass-bg text-text-secondary hover:text-text-primary border-glass-border'
+                }`}
+              >
+                Group
+              </button>
+              <button
                 onClick={() => setChatMode('p2p')}
                 className={`px-4 py-1.5 rounded-r-lg text-sm font-medium transition-all ${
                   chatMode === 'p2p'
@@ -338,30 +320,28 @@ export const TabContent: React.FC<TabContentProps> = ({ qubes, setQubes, onQubes
             </div>
           </div>
 
-          {/* Local Chat Mode */}
+          {/* Local Chat Mode - single qube */}
           <div className={`relative flex-1 ${chatMode === 'local' ? 'block' : 'hidden'}`}>
-            {/* Keep both chat interfaces mounted to preserve state */}
-            {/* Use opacity and z-index for visibility to avoid display:none issues */}
-            {/* Chat interfaces always use Dashboard selection, not current tab */}
-            <div className="absolute inset-0">
-              <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-10 opacity-100' : 'z-0 opacity-0 pointer-events-none'}`}>
-                <GroupChatInterface key="group-chat" selectedQubes={selectedQubesForDashboard} allQubes={qubes} />
-              </div>
-              <div className={`absolute inset-0 p-6 flex flex-col ${selectedQubesForDashboard.length >= 2 ? 'z-0 opacity-0 pointer-events-none' : 'z-10 opacity-100'}`}>
-                <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} onQubeModelChange={handleQubeModelChange} />
-              </div>
+            <div className="absolute inset-0 p-6 flex flex-col">
+              <ChatInterface key="single-qube-chat" selectedQubes={selectedQubesForDashboard} onQubeModelChange={handleQubeModelChange} />
             </div>
           </div>
 
-          {/* P2P Chat Mode - Uses same MultiQubeChatInterface with mode='p2p' */}
+          {/* Group Chat Mode - multiple local qubes */}
+          <div className={`relative flex-1 ${chatMode === 'group' ? 'block' : 'hidden'}`}>
+            <div className="absolute inset-0 p-6 flex flex-col">
+              <GroupChatInterface key="group-chat" selectedQubes={selectedQubesForDashboard} allQubes={qubes} />
+            </div>
+          </div>
+
+          {/* P2P Network Mode - chat with other users' Qubes */}
           <div className={`relative flex-1 ${chatMode === 'p2p' ? 'block' : 'hidden'}`}>
             <div className="absolute inset-0 p-6 flex flex-col">
-              <MultiQubeChatInterface
-                key="p2p-multi-qube-chat"
+              <P2PChatInterface
+                key="p2p-chat"
                 selectedQubes={selectedQubesForDashboard}
-                mode="p2p"
                 allQubes={qubes}
-                connections={p2pConnections}
+                onBack={() => setChatMode('local')}
               />
             </div>
           </div>

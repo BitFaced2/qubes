@@ -86,7 +86,8 @@ multiaddr>=0.0.9         # Multiaddr format for P2P addresses
 # Binary will be at ~/go/bin/p2pd (add to PATH or place in D:\Qubes\relay\)
 
 # BLE transport (Phase 6 — optional, graceful fallback if not installed)
-bleak>=0.21.0            # Cross-platform BLE for offline mesh (Windows/macOS/Linux)
+bleak>=0.21.0            # Cross-platform BLE central (scan/connect) role
+bless>=0.2.5             # Cross-platform BLE peripheral (advertise/server) role — BitChat parity
 
 # ============================================================================
 # BLOCKCHAIN (Phase 4)

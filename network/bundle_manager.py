@@ -381,3 +381,77 @@ async def update_bundle(qubes_data_dir: Optional[Path] = None) -> Dict[str, Any]
         "version": new_version,
         "message": f"Bundle updated to {new_version}. Restart relay to apply.",
     }
+
+
+# ---------------------------------------------------------------------------
+# p2pd auto-download on first run
+# ---------------------------------------------------------------------------
+
+# go-libp2p-daemon release asset naming pattern
+_P2PD_VERSION = "0.3.1"  # Minimum supported version
+_P2PD_BASE_URL = "https://github.com/libp2p/go-libp2p-daemon/releases/download"
+
+_P2PD_ASSETS: Dict[str, str] = {
+    "Windows-x86_64":  f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_windows_amd64.exe",
+    "Windows-AMD64":   f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_windows_amd64.exe",
+    "Darwin-x86_64":   f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_darwin_amd64",
+    "Darwin-arm64":    f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_darwin_arm64",
+    "Linux-x86_64":    f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_linux_amd64",
+    "Linux-aarch64":   f"{_P2PD_BASE_URL}/v{_P2PD_VERSION}/p2pd_linux_arm64",
+}
+
+
+def _p2pd_download_url() -> Optional[str]:
+    """Return the download URL for p2pd matching the current OS/arch, or None."""
+    key = f"{platform.system()}-{platform.machine()}"
+    return _P2PD_ASSETS.get(key)
+
+
+async def ensure_p2pd_binary(qubes_data_dir: Optional[Path] = None) -> Optional[Path]:
+    """
+    Ensure the p2pd binary is present. Downloads it automatically if missing.
+
+    Called by RelayNodeManager.start() before spawning the daemon.
+    Returns the path to the binary, or None if download failed.
+
+    The binary is placed in get_bundle_dir() / p2pd[.exe].
+    """
+    existing = get_p2pd_path(qubes_data_dir)
+    if existing:
+        logger.debug("p2pd_already_present", path=str(existing))
+        return existing
+
+    url = _p2pd_download_url()
+    if not url:
+        logger.warning(
+            "p2pd_no_download_url",
+            system=platform.system(),
+            machine=platform.machine(),
+            hint="Download p2pd manually from https://github.com/libp2p/go-libp2p-daemon/releases",
+        )
+        return None
+
+    bundle_dir = get_bundle_dir(qubes_data_dir)
+    binary_name = "p2pd.exe" if platform.system() == "Windows" else "p2pd"
+    dest = bundle_dir / binary_name
+
+    logger.info("p2pd_auto_download_start", url=url, dest=str(dest))
+
+    try:
+        success = await _download_file(url, dest)
+        if not success:
+            return None
+
+        # Make executable on Unix
+        if platform.system() != "Windows":
+            import stat
+            dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        logger.info("p2pd_auto_download_done", path=str(dest))
+        return dest
+
+    except Exception as exc:
+        logger.warning("p2pd_auto_download_failed", error=str(exc))
+        if dest.exists():
+            dest.unlink()
+        return None

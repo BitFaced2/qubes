@@ -10,9 +10,16 @@ Implements the 4-function relay transport interface:
   receive(stream) → bytes
   discover_local_peers() → List[str]
 
-Requires:  pip install bleak>=0.21.0
-If bleak is not installed, BLETransport raises ImportError on instantiation
-and the relay falls back gracefully to internet transports only.
+Also implements BLE GATT server (peripheral/advertise role) via bless:
+  BLEServer — advertises the Qubes relay service so other devices can
+  discover and connect to this node without internet (BitChat-parity).
+
+Requires:
+  pip install bleak>=0.21.0   # Central (client/scan) role
+  pip install bless>=0.2.5    # Peripheral (server/advertise) role
+
+If bleak/bless are not installed, the respective class raises ImportError
+on instantiation and the relay falls back gracefully.
 
 BLE GATT service:
   Service UUID:      QUBES_BLE_SERVICE_UUID
@@ -20,13 +27,13 @@ BLE GATT service:
   Notify char UUID:  QUBES_BLE_NOTIFY_CHAR  (server → client)
 
 Message framing:
-  Messages are fragmented into CHUNK_SIZE (512) byte pieces.
+  Messages are fragmented into CHUNK_SIZE (488) byte pieces.
   Each fragment: [seq_4b][total_4b][data]
   Final reassembly at receiver.
 
 Platform notes:
-  Windows: WinRT BLE stack (works with most BT 4.0+ adapters)
-  macOS:   CoreBluetooth (requires Bluetooth permission)
+  Windows: WinRT BLE stack (bleak) + WinRT GattServiceProvider (bless)
+  macOS:   CoreBluetooth via bleak + bless
   Linux:   BlueZ via D-Bus (requires bluetoothd running)
   Android: Handled by the mobile layer (not this file)
   iOS:     CoreBluetooth (handled by mobile layer)
@@ -34,7 +41,7 @@ Platform notes:
 
 import asyncio
 import struct
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from utils.logging import get_logger
 
@@ -56,6 +63,12 @@ try:
     _BLEAK_AVAILABLE = True
 except ImportError:
     _BLEAK_AVAILABLE = False
+
+try:
+    from bless import BlessServer, BlessGATTCharacteristic, GATTCharacteristicProperties, GATTAttributePermissions
+    _BLESS_AVAILABLE = True
+except ImportError:
+    _BLESS_AVAILABLE = False
 
 
 class BLETransport:
@@ -205,3 +218,130 @@ class BLETransport:
 def is_ble_available() -> bool:
     """Return True if bleak is installed and BLE transport can be used."""
     return _BLEAK_AVAILABLE
+
+
+def is_ble_server_available() -> bool:
+    """Return True if bless is installed and BLE advertising is supported."""
+    return _BLESS_AVAILABLE
+
+
+class BLEServer:
+    """
+    BLE GATT peripheral (server/advertise) role for Qubes relay.
+
+    Advertises the Qubes relay service UUID so nearby devices running
+    BLETransport can discover this node and connect without internet.
+    This is the missing piece for BitChat-parity BLE mesh.
+
+    Requires: pip install bless>=0.2.5
+
+    Usage:
+        server = BLEServer(peer_id="QmMyPeerID", on_message=handle_message)
+        await server.start()
+        # ... relay is now discoverable via BLE scan ...
+        await server.stop()
+
+    on_message(sender_addr: str, data: bytes) is called for each complete
+    reassembled message received from a connecting BLE client.
+    """
+
+    def __init__(
+        self,
+        peer_id: str,
+        on_message: Optional[Callable[[str, bytes], None]] = None,
+    ) -> None:
+        if not _BLESS_AVAILABLE:
+            raise ImportError(
+                "bless is required for BLE server mode. Install with: pip install bless>=0.2.5"
+            )
+        self.peer_id = peer_id
+        self.on_message = on_message
+        self._server: Optional[Any] = None
+        self._running = False
+        self._receive_buffers: Dict[str, bytearray] = {}
+        self._receive_seqs: Dict[str, int] = {}
+
+    async def start(self) -> None:
+        """Start advertising the Qubes BLE relay service."""
+        loop = asyncio.get_event_loop()
+        self._server = BlessServer(name=f"Qubes-{self.peer_id[:8]}", loop=loop)
+        self._server.read_request_func = self._read_request
+        self._server.write_request_func = self._write_request
+
+        await self._server.add_new_service(QUBES_BLE_SERVICE_UUID)
+
+        # Write characteristic: remote → us (receive incoming data)
+        write_props = GATTCharacteristicProperties.write | GATTCharacteristicProperties.write_without_response
+        write_perms = GATTAttributePermissions.writeable
+        await self._server.add_new_characteristic(
+            QUBES_BLE_SERVICE_UUID,
+            QUBES_BLE_WRITE_CHAR,
+            write_props,
+            None,
+            write_perms,
+        )
+
+        # Notify characteristic: us → remote (send outgoing data)
+        notify_props = GATTCharacteristicProperties.notify | GATTCharacteristicProperties.read
+        notify_perms = GATTAttributePermissions.readable
+        await self._server.add_new_characteristic(
+            QUBES_BLE_SERVICE_UUID,
+            QUBES_BLE_NOTIFY_CHAR,
+            notify_props,
+            None,
+            notify_perms,
+        )
+
+        await self._server.start()
+        self._running = True
+        logger.info("ble_server_started", peer_id=self.peer_id[:16], service=QUBES_BLE_SERVICE_UUID)
+
+    async def stop(self) -> None:
+        """Stop BLE advertising and disconnect all clients."""
+        if self._server and self._running:
+            await self._server.stop()
+            self._running = False
+            logger.info("ble_server_stopped")
+
+    async def notify_all(self, data: bytes) -> None:
+        """Send data to all connected BLE clients via GATT notify."""
+        if not self._server or not self._running:
+            return
+        fragments = [data[i:i + CHUNK_SIZE] for i in range(0, len(data), CHUNK_SIZE)]
+        total = len(fragments)
+        for seq, fragment in enumerate(fragments):
+            packet = struct.pack(">II", seq, total) + fragment
+            self._server.get_characteristic(QUBES_BLE_NOTIFY_CHAR).value = bytearray(packet)
+            self._server.update_value(QUBES_BLE_SERVICE_UUID, QUBES_BLE_NOTIFY_CHAR)
+            await asyncio.sleep(0.01)  # yield between fragments
+
+    def _read_request(self, characteristic: Any, **kwargs: Any) -> bytearray:
+        """GATT read handler — returns empty payload (notify-only design)."""
+        return bytearray()
+
+    def _write_request(self, characteristic: Any, value: Any, **kwargs: Any) -> None:
+        """GATT write handler — reassemble fragments from BLE client."""
+        try:
+            data = bytes(value)
+            if len(data) < 8:
+                return
+            seq, total = struct.unpack_from(">II", data, 0)
+            payload = data[8:]
+
+            # Use characteristic handle as key (single-client simplification)
+            key = "default"
+            if key not in self._receive_buffers:
+                self._receive_buffers[key] = bytearray()
+
+            self._receive_buffers[key].extend(payload)
+
+            if seq == total - 1:
+                complete = bytes(self._receive_buffers.pop(key))
+                logger.debug("ble_server_received", bytes=len(complete))
+                if self.on_message:
+                    try:
+                        self.on_message("ble_client", complete)
+                    except Exception as exc:
+                        logger.debug("ble_server_message_handler_error", error=str(exc))
+        except Exception as exc:
+            logger.debug("ble_server_write_error", error=str(exc))

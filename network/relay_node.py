@@ -25,6 +25,7 @@ from network.store_forward import StoreForwardQueue
 from network.onion import OnionRouter
 from network.cover_traffic import CoverTrafficManager
 from network.nostr_transport import NostrTransport
+from network.bundle_manager import ensure_p2pd_binary
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -107,11 +108,17 @@ class RelayNodeManager:
             return
 
         try:
+            # Auto-download p2pd binary if not present
+            if not self.p2pd_binary:
+                downloaded = await ensure_p2pd_binary()
+                if downloaded:
+                    self.p2pd_binary = str(downloaded)
+
             self._bridge = LibP2PDaemonBridge(
                 qube_id="relay",
                 listen_port=self.listen_port,
                 bootstrap_peers=self.bootstrap_peers,
-                daemon_binary=self.p2pd_binary,
+                daemon_binary=self.p2pd_binary or "p2pd",
             )
             await self._bridge.start()
 

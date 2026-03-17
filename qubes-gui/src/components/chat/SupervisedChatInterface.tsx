@@ -12,11 +12,31 @@ interface SupervisedChatInterfaceProps {
     session_id: string;
     participants: Array<{ commitment: string; name: string; is_local: boolean }>;
   };
-  ownerCommitments: string[];  // which commitments are "owners" vs "qubes"
+  ownerCommitments: string[];
   onLeave: () => void;
 }
 
 const API_BASE = 'https://qube.cash/api/v2';
+const STORAGE_KEY = (sessionId: string) => `supervised-session-${sessionId}`;
+
+// Persist messages to localStorage
+function saveMessages(sessionId: string, messages: SupervisedMessage[]) {
+  try {
+    localStorage.setItem(STORAGE_KEY(sessionId), JSON.stringify(messages));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+// Load messages from localStorage
+function loadMessages(sessionId: string): SupervisedMessage[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY(sessionId));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
 
 export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = ({
   selectedQubes,
@@ -31,7 +51,9 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
   const primaryCommitment = primaryQube?.commitment || '';
 
   // --- State ---
-  const [messages, setMessages] = useState<SupervisedMessage[]>([]);
+  const [messages, setMessages] = useState<SupervisedMessage[]>(() =>
+    loadMessages(session.session_id)
+  );
   const [ownerInput, setOwnerInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
@@ -44,6 +66,8 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
   const [activeLocalQubeIds, setActiveLocalQubeIds] = useState<string[]>(
     selectedQubes.map(q => q.qube_id)
   );
+  // Track which message is being hovered (for retract button)
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
 
   // ownerPresence: tracks is_in_session per commitment
   const [ownerPresence, setOwnerPresence] = useState<Map<string, boolean>>(() => {
@@ -61,7 +85,12 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const handleMessageRef = useRef<((data: any) => void) | null>(null);
 
-  // Auto-scroll
+  // Persist messages whenever they change
+  useEffect(() => {
+    saveMessages(session.session_id, messages);
+  }, [messages, session.session_id]);
+
+  // Auto-scroll on new messages
   const scrollToBottom = useCallback(() => {
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTo({
@@ -76,12 +105,9 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
   }, [messages.length, scrollToBottom]);
 
   // --- Helpers ---
-  const getLocalQubeIds = useCallback(() => {
-    return activeLocalQubeIds.join(',');
-  }, [activeLocalQubeIds]);
+  const getLocalQubeIds = useCallback(() => activeLocalQubeIds.join(','), [activeLocalQubeIds]);
 
   const getRemoteConnectionsJson = useCallback(() => {
-    // For supervised, remote connections are the owner commitments that are not local
     const localCommitments = selectedQubes.map(q => q.commitment || '');
     const remoteOwners = ownerCommitments.filter(c => !localCommitments.includes(c));
     return JSON.stringify(
@@ -128,7 +154,6 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
   // --- Continue P2P conversation (Qube response) ---
   const continueP2PConversation = useCallback(async (convId: string) => {
     if (!userId || !password) return;
-
     try {
       const result = await invoke<{
         success: boolean;
@@ -160,6 +185,22 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
       console.error('Failed to continue P2P conversation:', err);
     }
   }, [userId, password, session.session_id, getLocalQubeIds, getRemoteConnectionsJson, submitBlockToHub]);
+
+  // --- Retract a message ---
+  const retractMessage = useCallback((msgId: string) => {
+    setMessages(prev =>
+      prev.map(m => m.id === msgId ? { ...m, is_retracted: true } : m)
+    );
+    // Broadcast retract to other participants via WS
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'retract_message',
+        commitment: primaryCommitment,
+        msg_id: msgId,
+        timestamp: Date.now() / 1000,
+      }));
+    }
+  }, [primaryCommitment]);
 
   // --- WebSocket message handler ---
   const handleWebSocketMessage = useCallback(async (data: any) => {
@@ -193,18 +234,10 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
           return [...prev, msg];
         });
 
-        // If from a local qube, nothing more to do
         if (localCommitments.includes(blockCreator)) break;
 
-        // Remote block — check if the sender's owner is still in session
-        // Find which owner "owns" this qube by checking ownerPresence
-        // For simplicity: if the block's owner commitment is not in ownerPresence,
-        // we assume the qube is supervised by a present owner and proceed.
         const senderOwnerCommitment = ownerCommitments.find(oc => oc === blockCreator);
-        if (senderOwnerCommitment && !isOwnerPresent(senderOwnerCommitment)) {
-          // Suppress response — owner has left
-          break;
-        }
+        if (senderOwnerCommitment && !isOwnerPresent(senderOwnerCommitment)) break;
 
         if (conversationId && !processingResponse && userId && password) {
           setProcessingResponse(true);
@@ -247,6 +280,16 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
         break;
       }
 
+      case 'retract_message': {
+        const { msg_id } = data;
+        if (msg_id) {
+          setMessages(prev =>
+            prev.map(m => m.id === msg_id ? { ...m, is_retracted: true } : m)
+          );
+        }
+        break;
+      }
+
       case 'participant_left': {
         const leftCommitment = data.commitment;
         if (ownerCommitments.includes(leftCommitment)) {
@@ -258,6 +301,7 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
           const leaverName =
             session.participants.find(p => p.commitment === leftCommitment)?.name || 'An owner';
           setPausedBanner(`${leaverName} left the session. Their Qubes are paused.`);
+          // Messages are NOT deleted — they persist
         }
         break;
       }
@@ -286,7 +330,12 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
             timestamp: b.timestamp,
             block_number: b.block_number,
           }));
-          setMessages(synced);
+          // Merge with existing (localStorage may have more, e.g. owner messages not in hub)
+          setMessages(prev => {
+            const existingIds = new Set(synced.map(m => m.id));
+            const ownerOnly = prev.filter(m => !existingIds.has(m.id));
+            return [...synced, ...ownerOnly].sort((a, b) => a.timestamp - b.timestamp);
+          });
         }
         break;
 
@@ -349,7 +398,6 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
     setOwnerInput('');
     setIsLoading(true);
 
-    // Add optimistically to own thread
     const localMsg: SupervisedMessage = {
       id: crypto.randomUUID(),
       sender_type: 'owner',
@@ -360,18 +408,16 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
     };
     setMessages(prev => [...prev, localMsg]);
 
-    // Broadcast via WebSocket
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'owner_message',
         commitment: primaryCommitment,
         content: text,
-        timestamp: Date.now() / 1000,
+        timestamp: localMsg.timestamp,
         msg_id: localMsg.id,
       }));
     }
 
-    // Optionally also ask local Qubes
     if (alsoAskQubes && userId && password) {
       try {
         if (!conversationStarted) {
@@ -464,10 +510,7 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
     );
   };
 
-  // Qubes available to add (all minted, not already in activeLocalQubeIds)
   const mintedQubes = allQubes.filter(q => q.commitment && q.commitment !== 'pending_minting');
-
-  // Group participants by owner
   const localOwnerCommitments = selectedQubes.map(q => q.commitment || '');
 
   return (
@@ -476,14 +519,12 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
       <GlassCard className="p-4 flex-shrink-0">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-4 flex-1 min-w-0">
-            {/* WS status */}
             <div
               className={`w-3 h-3 rounded-full flex-shrink-0 ${
                 wsConnected ? 'bg-accent-success animate-pulse' : 'bg-accent-danger'
               }`}
             />
 
-            {/* Owner presence badges */}
             <div className="flex items-center gap-3 flex-wrap">
               {ownerCommitments.map(commitment => {
                 const participant = session.participants.find(p => p.commitment === commitment);
@@ -509,7 +550,6 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
                     >
                       {inSession ? 'in session' : 'left'}
                     </span>
-                    {/* Qube chips */}
                     {qubesForOwner.map(q => (
                       <span
                         key={q.qube_id}
@@ -523,7 +563,6 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
                         {q.name}
                       </span>
                     ))}
-                    {/* [+] button to add/remove local qubes */}
                     {isLocal && (
                       <div className="relative">
                         <button
@@ -547,10 +586,7 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
                                   onChange={() => toggleActiveQube(q.qube_id)}
                                   className="w-3 h-3"
                                 />
-                                <span
-                                  className="text-sm"
-                                  style={{ color: q.favorite_color }}
-                                >
+                                <span className="text-sm" style={{ color: q.favorite_color }}>
                                   {q.name}
                                 </span>
                               </label>
@@ -601,56 +637,76 @@ export const SupervisedChatInterface: React.FC<SupervisedChatInterfaceProps> = (
                 <div
                   key={msg.id}
                   className={`flex ${isMe ? 'justify-end' : 'justify-start'}`}
+                  onMouseEnter={() => setHoveredMsgId(msg.id)}
+                  onMouseLeave={() => setHoveredMsgId(null)}
                 >
-                  <div
-                    className={`max-w-[70%] rounded-lg p-3 border-2 ${
-                      isMe
-                        ? 'bg-accent-primary/20 border-accent-primary'
-                        : isOwnerMsg
-                          ? 'bg-glass-bg border-glass-border'
-                          : 'bg-bg-tertiary'
-                    }`}
-                    style={
-                      !isMe && !isOwnerMsg && qubeForMsg
-                        ? { borderColor: qubeForMsg.favorite_color }
-                        : undefined
-                    }
-                  >
-                    {/* Sender label */}
-                    <div className="flex items-center gap-2 mb-1">
-                      {isOwnerMsg && (
-                        <span className="text-xs font-semibold text-text-secondary bg-glass-bg px-1.5 py-0.5 rounded">
-                          Owner
-                        </span>
-                      )}
-                      <p
-                        className={`text-sm font-medium ${
-                          isMe
-                            ? 'text-accent-primary'
+                  <div className="relative">
+                    <div
+                      className={`max-w-[70%] rounded-lg p-3 border-2 ${
+                        msg.is_retracted
+                          ? 'bg-bg-tertiary/50 border-glass-border/30 opacity-50'
+                          : isMe
+                            ? 'bg-accent-primary/20 border-accent-primary'
                             : isOwnerMsg
-                              ? 'text-text-primary'
-                              : 'text-text-secondary'
-                        }`}
-                        style={
-                          !isMe && !isOwnerMsg && qubeForMsg
-                            ? { color: qubeForMsg.favorite_color }
-                            : undefined
-                        }
+                              ? 'bg-glass-bg border-glass-border'
+                              : 'bg-bg-tertiary'
+                      }`}
+                      style={
+                        !msg.is_retracted && !isMe && !isOwnerMsg && qubeForMsg
+                          ? { borderColor: qubeForMsg.favorite_color }
+                          : undefined
+                      }
+                    >
+                      {!msg.is_retracted && (
+                        <div className="flex items-center gap-2 mb-1">
+                          {isOwnerMsg && (
+                            <span className="text-xs font-semibold text-text-secondary bg-glass-bg px-1.5 py-0.5 rounded">
+                              Owner
+                            </span>
+                          )}
+                          <p
+                            className={`text-sm font-medium ${
+                              isMe
+                                ? 'text-accent-primary'
+                                : isOwnerMsg
+                                  ? 'text-text-primary'
+                                  : 'text-text-secondary'
+                            }`}
+                            style={
+                              !isMe && !isOwnerMsg && qubeForMsg
+                                ? { color: qubeForMsg.favorite_color }
+                                : undefined
+                            }
+                          >
+                            {msg.sender_name}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="whitespace-pre-wrap break-words text-text-primary">
+                        {msg.is_retracted ? (
+                          <span className="italic text-text-tertiary text-sm">Message deleted</span>
+                        ) : (
+                          msg.content
+                        )}
+                      </div>
+
+                      {!msg.is_retracted && !isOwnerMsg && msg.block_number !== undefined && (
+                        <p className="text-text-tertiary text-xs mt-1">
+                          Block #{msg.block_number}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Retract button — only on own owner messages, on hover */}
+                    {isMe && isOwnerMsg && !msg.is_retracted && hoveredMsgId === msg.id && (
+                      <button
+                        onClick={() => retractMessage(msg.id)}
+                        className="absolute -top-2 -right-2 w-5 h-5 rounded-full bg-accent-danger/80 hover:bg-accent-danger text-white text-xs flex items-center justify-center shadow-md"
+                        title="Delete message"
                       >
-                        {msg.sender_name}
-                      </p>
-                    </div>
-
-                    {/* Content */}
-                    <div className="whitespace-pre-wrap break-words text-text-primary">
-                      {msg.content}
-                    </div>
-
-                    {/* Footer */}
-                    {!isOwnerMsg && msg.block_number !== undefined && (
-                      <p className="text-text-tertiary text-xs mt-1">
-                        Block #{msg.block_number}
-                      </p>
+                        ✕
+                      </button>
                     )}
                   </div>
                 </div>

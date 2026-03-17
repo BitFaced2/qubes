@@ -102,9 +102,10 @@ export function useUpdater(checkOnMount: boolean = false): UseUpdaterReturn {
     setError(null);
 
     try {
+      let success: boolean;
       if (isHeavy) {
         // Heavy bundle: custom download → verify → install → restart
-        await downloadAndInstallHeavyUpdate(
+        success = await downloadAndInstallHeavyUpdate(
           (progress) => {
             setDownloadProgress(progress);
           },
@@ -114,16 +115,22 @@ export function useUpdater(checkOnMount: boolean = false): UseUpdaterReturn {
         );
       } else {
         // Light build: Tauri updater
-        await downloadAndInstallUpdate((progress) => {
+        success = await downloadAndInstallUpdate((progress) => {
           setDownloadProgress(progress);
         });
       }
+      // If success=false (no update found at install time), reset state
+      if (!success) {
+        setError('Update download failed or no update available. Please try again.');
+        setIsDownloading(false);
+        setHeavyStatus('idle');
+      }
+      // If success=true, app will relaunch — we won't reach here
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to install update');
       setIsDownloading(false);
       setHeavyStatus('idle');
     }
-    // Note: If successful, app will relaunch, so we won't reach here
   }, [updateStatus, isHeavy]);
 
   // Dismiss update notification

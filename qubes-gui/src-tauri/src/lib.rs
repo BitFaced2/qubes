@@ -7525,11 +7525,14 @@ async fn fetch_update_manifest() -> Result<serde_json::Value, String> {
         "https://github.com/BitFaced2/Qubes/releases/latest/download/latest.json",
         "https://qube.cash/releases/latest.json",
     ];
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("Qubes-App/1.0 (auto-updater)")
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let mut last_error = String::new();
 
     for url in &endpoints {
-        match client.get(*url).timeout(Duration::from_secs(15)).send().await {
+        match client.get(*url).timeout(Duration::from_secs(20)).send().await {
             Ok(response) if response.status().is_success() => {
                 match response.json::<serde_json::Value>().await {
                     Ok(manifest) => return Ok(manifest),
@@ -7653,7 +7656,10 @@ async fn download_heavy_update(
             .map_err(|e| format!("Failed to remove old download: {}", e))?;
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent("Qubes-App/1.0 (auto-updater)")
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
     let response = client
         .get(&url)
         .timeout(Duration::from_secs(3600)) // 1 hour timeout for large files

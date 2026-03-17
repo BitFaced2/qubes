@@ -48,14 +48,10 @@ export async function checkForUpdate(): Promise<UpdateStatus> {
     };
   } catch (error) {
     console.error('Failed to check for updates:', error);
-
-    // Before first release, any error means "no updates available"
-    // This is cleaner than showing confusing error messages
-    // Real network errors will be obvious (app won't work at all)
     return {
       available: false,
       currentVersion,
-      // Don't show error - just treat as "no updates"
+      error: error instanceof Error ? error.message : 'Failed to check for updates',
     };
   }
 }

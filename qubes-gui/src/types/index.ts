@@ -624,4 +624,5 @@ export interface SupervisedMessage {
   content: string;
   timestamp: number;
   block_number?: number;       // qube messages only (on-chain blocks)
+  is_retracted?: boolean;      // true = owner deleted this message
 }

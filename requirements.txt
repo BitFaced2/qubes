@@ -83,7 +83,10 @@ multiaddr>=0.0.9         # Multiaddr format for P2P addresses
 
 # Required: Install go-libp2p-daemon binary separately
 # go install github.com/libp2p/go-libp2p-daemon/p2pd@latest
-# Binary will be at ~/go/bin/p2pd (add to PATH)
+# Binary will be at ~/go/bin/p2pd (add to PATH or place in D:\Qubes\relay\)
+
+# BLE transport (Phase 6 — optional, graceful fallback if not installed)
+bleak>=0.21.0            # Cross-platform BLE for offline mesh (Windows/macOS/Linux)
 
 # ============================================================================
 # BLOCKCHAIN (Phase 4)

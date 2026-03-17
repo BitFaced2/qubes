@@ -13,6 +13,7 @@ TODO Phase 2: Implement real cover traffic emission.
 """
 
 import asyncio
+import os
 from typing import Optional
 
 from utils.logging import get_logger
@@ -56,7 +57,7 @@ class CoverTrafficManager:
             return
         self._running = True
         self._task = asyncio.create_task(self._emit_loop(relay_node))
-        logger.info("cover_traffic_started_stub")
+        logger.info("cover_traffic_started", rate_hz=self.rate_hz)
 
     async def stop(self) -> None:
         """Stop cover traffic emission."""
@@ -67,9 +68,23 @@ class CoverTrafficManager:
         logger.info("cover_traffic_stopped")
 
     async def _emit_loop(self, relay_node) -> None:
-        """Emit dummy packets at the configured rate. TODO Phase 2."""
+        """Emit dummy 512-byte packets at the configured rate to random online peers."""
+        import random
+
         interval = 1.0 / self.rate_hz
         while self._running:
-            # TODO Phase 2: pick random peer, send dummy encrypted packet
-            logger.debug("cover_traffic_emit_todo")
+            try:
+                peers = [p for p in relay_node.get_peers() if p.get("online")]
+                if peers and relay_node._bridge and relay_node.is_running:
+                    peer = random.choice(peers)
+                    # Random-looking inbox topic derived from peer multiaddr hash
+                    import hashlib
+                    fake_id = hashlib.sha256(
+                        peer["multiaddr"].encode() + str(int(asyncio.get_event_loop().time())).encode()
+                    ).hexdigest()[:16]
+                    dummy = os.urandom(PACKET_SIZE_BYTES)
+                    await relay_node._bridge.publish(f"qube/{fake_id}/inbox", dummy)
+                    logger.debug("cover_traffic_emitted", peer=peer["multiaddr"][:30])
+            except Exception:
+                pass  # Cover traffic failure must never affect real message delivery
             await asyncio.sleep(interval)

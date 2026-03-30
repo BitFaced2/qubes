@@ -1,0 +1,16 @@
+{
+  "name": "@qubesai/relay",
+  "version": "1.0.0",
+  "description": "Qubes P2P relay daemon — for community relay operators",
+  "scripts": {
+    "relay:start": "python relay_daemon.py",
+    "relay:dev": "python relay_daemon.py --dev",
+    "relay:test": "pytest ../../tests/test_relay.py -v",
+    "relay:status": "python -c \"import asyncio; from network.relay_node import RelayNodeManager; ...\""
+  },
+  "keywords": ["qubes", "p2p", "relay", "bch", "bitcoin-cash"],
+  "license": "MIT",
+  "engines": {
+    "python": ">=3.11"
+  }
+}

@@ -22,6 +22,7 @@ static RATE_LIMITER: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 fn get_rate_limit_ms(command: &str) -> Option<u64> {
     match command {
         "send_message" => Some(500),
+        "send_direct_p2p_message" => Some(500),
         "generate_speech" => Some(100),  // Reduced from 1000ms to allow faster TTS prefetch
         "create_qube" => Some(5000),
         "anchor_session" => Some(2000),
@@ -5274,9 +5275,160 @@ async fn process_p2p_message(app_handle: AppHandle,
 
 }
 
+// =============================================================================
+// RELAY NODE COMMANDS — Phase 1
+// =============================================================================
+
+/// Start the local P2P relay node
+#[tauri::command]
+async fn init_relay_node(app_handle: AppHandle, user_id: String, password: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("init-relay-node", args, secrets, Some(&app_handle), None).await
+}
+
+/// Stop the local P2P relay node
+#[tauri::command]
+async fn stop_relay_node(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("stop-relay-node", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Get relay node status (running, peer_id, peer_count, online_peers)
+#[tauri::command]
+async fn get_relay_status(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("get-relay-status", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Get list of relay peers with live reachability status
+#[tauri::command]
+async fn get_relay_peers(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("get-relay-peers", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Add a custom relay peer
+#[tauri::command]
+async fn add_relay_peer(app_handle: AppHandle, user_id: String, multiaddr: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id, multiaddr];
+    sidecar_execute_with_retry("add-relay-peer", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Remove a custom relay peer
+#[tauri::command]
+async fn remove_relay_peer(app_handle: AppHandle, user_id: String, multiaddr: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id, multiaddr];
+    sidecar_execute_with_retry("remove-relay-peer", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Update relay preferences
+#[tauri::command]
+async fn update_relay_preferences(app_handle: AppHandle, user_id: String, password: String, prefs_json: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id, prefs_json];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("update-relay-preferences", args, secrets, Some(&app_handle), None).await
+}
+
+/// Send an encrypted direct P2P message via relay
+#[tauri::command]
+async fn send_direct_p2p_message(
+    app_handle: AppHandle,
+    user_id: String,
+    qube_id: String,
+    recipient_qube_id: String,
+    recipient_pub_key: String,
+    message: String,
+    password: String,
+) -> Result<serde_json::Value, String> {
+    check_rate_limit("send_direct_p2p_message")?;
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+    let args = vec![user_id, qube_id, recipient_qube_id, recipient_pub_key, message];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("send-direct-p2p-message", args, secrets, Some(&app_handle), None).await
+}
+
+/// Drain store-and-forward queue for a Qube
+#[tauri::command]
+async fn get_direct_p2p_messages(app_handle: AppHandle, user_id: String, qube_id: String, password: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    validate_identifier(&qube_id, "qube_id")?;
+    let args = vec![user_id, qube_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("get-direct-p2p-messages", args, secrets, Some(&app_handle), None).await
+}
+
+/// Check if a newer relay bundle is available (Phase 5)
+#[tauri::command]
+async fn check_relay_bundle_update(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("check-relay-bundle-update", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Download and apply the latest relay bundle (Phase 5)
+#[tauri::command]
+async fn update_relay_bundle(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("update-relay-bundle", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+// =============================================================================
+// ENDPOINT PREFERENCES COMMANDS
+// =============================================================================
+
+/// Get network endpoint preferences
+#[tauri::command]
+async fn get_endpoint_preferences(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("get-endpoint-preferences", args, HashMap::new(), Some(&app_handle), None).await
+}
+
+/// Update network endpoint preferences
+#[tauri::command]
+async fn update_endpoint_preferences(app_handle: AppHandle, user_id: String, password: String, prefs_json: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id, prefs_json];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("update-endpoint-preferences", args, secrets, Some(&app_handle), None).await
+}
+
+/// Reset endpoint preferences to defaults
+#[tauri::command]
+async fn reset_endpoint_preferences(app_handle: AppHandle, user_id: String, password: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    let mut secrets = HashMap::new();
+    secrets.insert("password", password.as_str());
+    sidecar_execute_with_retry("reset-endpoint-preferences", args, secrets, Some(&app_handle), None).await
+}
+
+/// Ping all configured Fulcrum + Nostr endpoints and return connected counts
+#[tauri::command]
+async fn check_endpoints(app_handle: AppHandle, user_id: String) -> Result<serde_json::Value, String> {
+    validate_identifier(&user_id, "user_id")?;
+    let args = vec![user_id];
+    sidecar_execute_with_retry("check-endpoints", args, HashMap::new(), Some(&app_handle), None).await
+}
+
 /// Send an introduction request to another Qube
 #[tauri::command]
-async fn send_introduction(app_handle: AppHandle, 
+async fn send_introduction(app_handle: AppHandle,
     user_id: String,
     qube_id: String,
     to_commitment: String,
@@ -7955,6 +8107,23 @@ pub fn run() {
             continue_p2p_conversation,
             inject_p2p_block,
             send_p2p_user_message,
+            // Relay Node (Phase 1)
+            init_relay_node,
+            stop_relay_node,
+            get_relay_status,
+            get_relay_peers,
+            add_relay_peer,
+            remove_relay_peer,
+            update_relay_preferences,
+            send_direct_p2p_message,
+            get_direct_p2p_messages,
+            check_relay_bundle_update,
+            update_relay_bundle,
+            // Endpoint Preferences
+            get_endpoint_preferences,
+            update_endpoint_preferences,
+            reset_endpoint_preferences,
+            check_endpoints,
             // Setup Wizard
             get_bundle_dir,
             check_first_run,

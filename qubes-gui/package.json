@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "cleanup": "powershell -ExecutionPolicy Bypass -File cleanup-dev.ps1",
-    "safe-tauri": "npm run cleanup && tauri dev"
+    "safe-tauri": "npm run cleanup && tauri dev",
+    "relay:start": "python ../relay/relay_daemon.py",
+    "relay:dev": "python ../relay/relay_daemon.py --dev",
+    "relay:test": "cd .. && pytest relay/ -v --tb=short"
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",

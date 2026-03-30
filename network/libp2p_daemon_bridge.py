@@ -113,13 +113,21 @@ class LibP2PDaemonBridge:
             logger.info("starting_libp2p_daemon", qube_id=self.qube_id)
 
             # Build daemon command
+            # WebSocket and QUIC ports derived from TCP port
+            ws_port = self.listen_port + 1 if self.listen_port else 4002
+            quic_port = self.listen_port if self.listen_port else 4001
+
             cmd = [
                 self.daemon_binary,
                 f"-listen=/ip4/0.0.0.0/tcp/{self.listen_port}",
+                f"-listen=/ip4/0.0.0.0/tcp/{ws_port}/ws",    # WebSocket (browser + iOS)
+                f"-listen=/ip4/0.0.0.0/udp/{quic_port}/quic", # QUIC (mobile connection migration)
                 f"-controlSocket={self.control_socket_path}",
-                "-dht",  # Enable DHT
-                "-dhtClient=false",  # Run as DHT server (provide content)
-                "-gossipsub",  # Enable GossipSub
+                "-dht",          # Enable Kademlia DHT
+                "-dhtClient=false",  # Full DHT server (provide + route)
+                "-gossipsub",    # Enable GossipSub pub/sub
+                "-natPortMap",   # UPnP/NAT-PMP port mapping
+                "-autoRelay",    # Act as circuit relay for NATed peers
             ]
 
             # Add bootstrap peers

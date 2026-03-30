@@ -51,6 +51,16 @@
       "import": "./dist/storage/index.mjs",
       "require": "./dist/storage/index.cjs",
       "types": "./dist/storage/index.d.ts"
+    },
+    "./relay": {
+      "import": "./dist/relay/index.mjs",
+      "require": "./dist/relay/index.cjs",
+      "types": "./dist/relay/index.d.ts"
+    },
+    "./nostr": {
+      "import": "./dist/nostr/index.mjs",
+      "require": "./dist/nostr/index.cjs",
+      "types": "./dist/nostr/index.d.ts"
     }
   },
   "files": [

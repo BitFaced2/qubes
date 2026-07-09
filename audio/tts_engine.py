@@ -305,8 +305,8 @@ class GeminiTTS(TTSProvider):
         import base64
         import time
 
-        max_retries = 3
-        retry_delays = [2, 4, 8]  # Exponential backoff
+        max_retries = 4
+        retry_delays = [2, 8, 20, 40]  # Longer backoff to handle rate limits
         start_time = time.time()
 
         logger.info(
@@ -358,6 +358,25 @@ class GeminiTTS(TTSProvider):
                         if response.status != 200:
                             error_text = await response.text()
 
+                            # Retry on rate limit (429) with server-suggested delay
+                            if response.status == 429 and attempt < max_retries - 1:
+                                # Extract retry delay from response if available
+                                retry_delay = retry_delays[attempt]
+                                try:
+                                    import re
+                                    delay_match = re.search(r'retry in (\d+)', error_text.lower())
+                                    if delay_match:
+                                        retry_delay = max(int(delay_match.group(1)), retry_delay)
+                                except Exception:
+                                    pass
+                                logger.warning(
+                                    "gemini_tts_rate_limited",
+                                    attempt=attempt + 1,
+                                    delay=retry_delay
+                                )
+                                await asyncio.sleep(retry_delay)
+                                continue
+
                             # Retry on transient server errors (5xx)
                             if response.status >= 500 and attempt < max_retries - 1:
                                 logger.warning(
@@ -407,9 +426,13 @@ class GeminiTTS(TTSProvider):
                 error_desc = str(e) if str(e) else type(e).__name__
                 elapsed = time.time() - start_time
 
-                # Check if this is a retryable error (connection issues, timeouts)
-                is_client_error = error_desc.startswith("Gemini TTS API error 4")
-                if attempt < max_retries - 1 and not is_client_error:
+                # Check if this is a retryable error (connection issues, timeouts, rate limits)
+                # 429 rate limits ARE retryable even though they're 4xx
+                is_permanent_client_error = (
+                    error_desc.startswith("Gemini TTS API error 4")
+                    and "error 429" not in error_desc
+                )
+                if attempt < max_retries - 1 and not is_permanent_client_error:
                     # Don't retry 4xx errors (client errors), but retry others
                     logger.warning(
                         "gemini_tts_retrying",

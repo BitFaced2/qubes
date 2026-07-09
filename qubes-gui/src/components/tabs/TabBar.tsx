@@ -22,7 +22,7 @@ export const TabBar: React.FC = () => {
   const { currentTab, setCurrentTab } = useQubeSelection();
 
   return (
-    <div className="h-20 flex items-center justify-evenly bg-bg-secondary border-b border-glass-border">
+    <div className="h-20 flex items-center justify-evenly overflow-x-auto [&::-webkit-scrollbar]:hidden bg-bg-secondary border-b border-glass-border">
       {TABS.map((tab) => {
         const isActive = currentTab === tab.id;
 

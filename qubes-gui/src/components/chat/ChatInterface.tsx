@@ -1268,6 +1268,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
   const pendingWakePhraseRef = useRef<{ qubeId: string; phrase: string } | null>(null);
   const wakeDebounceRef = useRef<{ qubeId: string; qubeName: string; timer: ReturnType<typeof setTimeout> } | null>(null);
   const wakeToStreamTransitionRef = useRef(false);  // Prevents onend restart during wake→stream transition
+  const wakePhraseAccumulatorRef = useRef<string>('');  // Accumulates full phrase after wake word detection
   const [isWakeWordPending, setIsWakeWordPending] = useState(false);
   const [wakeWordRestartKey, setWakeWordRestartKey] = useState(0);  // Increment to force wake word effect re-run
 
@@ -1311,63 +1312,113 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
     };
 
     recognition.onresult = (event: any) => {
-      // Only look at the latest result, not the accumulated history.
-      // Each result is a separate utterance/phrase the browser detected.
+      // Build full transcript from ALL results (needed to capture complete phrase after wake word)
+      let fullTranscript = '';
+      for (let i = 0; i < event.results.length; i++) {
+        fullTranscript += event.results[i][0].transcript;
+      }
+      fullTranscript = applySttAliases(fullTranscript.trim());
+      const fullLower = fullTranscript.toLowerCase();
+
+      // If we already have an active wake word debounce, update the accumulated phrase
+      if (wakeDebounceRef.current) {
+        const qube = allQubes.find(q => q.qube_id === wakeDebounceRef.current!.qubeId);
+        if (qube) {
+          const name = qube.name.toLowerCase();
+          const wakePattern = new RegExp(`hey[,\\s]+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          const match = fullLower.match(wakePattern);
+          if (match) {
+            // Update accumulated phrase with everything after the wake word
+            wakePhraseAccumulatorRef.current = fullTranscript.slice(match.index! + match[0].length).replace(/^[,.\s]+/, '').trim();
+          }
+        }
+        // Reset the debounce timer (user is still speaking)
+        clearTimeout(wakeDebounceRef.current.timer);
+        const WAKE_PHRASE_DELAY = silenceTimeoutRef.current;
+        const qubeId = wakeDebounceRef.current.qubeId;
+        const qubeName = wakeDebounceRef.current.qubeName;
+        wakeDebounceRef.current = {
+          qubeId,
+          qubeName,
+          timer: setTimeout(() => {
+            const phrase = wakePhraseAccumulatorRef.current;
+            console.log('[WakeWord] Activating:', qubeName, phrase ? `with: "${phrase}"` : '(no phrase)');
+            wakeDebounceRef.current = null;
+            wakePhraseAccumulatorRef.current = '';
+            setIsWakeWordPending(false);
+
+            pendingWakePhraseRef.current = { qubeId, phrase };
+
+            wakeToStreamTransitionRef.current = true;
+            isWakeWordActiveRef.current = false;
+            try { recognition.stop(); } catch (_) {}
+
+            setTimeout(() => {
+              const pending = pendingWakePhraseRef.current;
+              if (!pending) return;
+              pendingWakePhraseRef.current = null;
+
+              if (!isStreamModeRef.current && toggleStreamModeRef.current) {
+                toggleStreamModeRef.current();
+              }
+              if (pending.phrase && handleStreamSendRef.current) {
+                setTimeout(() => handleStreamSendRef.current?.(pending.phrase), 500);
+              }
+            }, 800);
+          }, WAKE_PHRASE_DELAY),
+        };
+        return;
+      }
+
+      // No active debounce — check latest result for wake word (first detection)
       const latestResult = event.results[event.results.length - 1];
       if (!latestResult) return;
-      let transcript = applySttAliases(latestResult[0].transcript.trim());
-      const lower = transcript.toLowerCase();
-      console.log('[WakeWord] Heard:', JSON.stringify(lower));
+      const latestTranscript = applySttAliases(latestResult[0].transcript.trim());
+      const latestLower = latestTranscript.toLowerCase();
 
       for (const qube of allQubes) {
         const name = qube.name.toLowerCase();
-        // Match "hey <name>" with optional punctuation/spaces between "hey" and name
         const wakePattern = new RegExp(`^hey[,\\s]+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        const match = lower.match(wakePattern);
+        const match = latestLower.match(wakePattern);
 
         if (match) {
-          const phrase = transcript.slice(match[0].length).replace(/^[,.\s]+/, '').trim();
+          console.log('[WakeWord] Detected:', qube.name);
+          switchTabAndSelect('dashboard', qube.qube_id);
+          setIsWakeWordPending(true);
 
-          if (wakeDebounceRef.current?.qubeId === qube.qube_id) {
-            clearTimeout(wakeDebounceRef.current.timer);
-          } else {
-            console.log('[WakeWord] Detected:', qube.name);
-            switchTabAndSelect('dashboard', qube.qube_id);
-            setIsWakeWordPending(true);
-          }
+          // Extract initial phrase from full transcript
+          const fullMatch = fullLower.match(new RegExp(`hey[,\\s]+${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'));
+          wakePhraseAccumulatorRef.current = fullMatch
+            ? fullTranscript.slice(fullMatch.index! + fullMatch[0].length).replace(/^[,.\s]+/, '').trim()
+            : '';
 
           const WAKE_PHRASE_DELAY = silenceTimeoutRef.current;
           wakeDebounceRef.current = {
             qubeId: qube.qube_id,
             qubeName: qube.name,
             timer: setTimeout(() => {
+              const phrase = wakePhraseAccumulatorRef.current;
               console.log('[WakeWord] Activating:', qube.name, phrase ? `with: "${phrase}"` : '(no phrase)');
               wakeDebounceRef.current = null;
+              wakePhraseAccumulatorRef.current = '';
               setIsWakeWordPending(false);
 
               pendingWakePhraseRef.current = { qubeId: qube.qube_id, phrase };
 
-              // Stop wake word listener for Stream Mode transition
               wakeToStreamTransitionRef.current = true;
               isWakeWordActiveRef.current = false;
               try { recognition.stop(); } catch (_) {}
 
-              // Direct activation fallback (if selectedQubes effect doesn't fire)
               setTimeout(() => {
                 const pending = pendingWakePhraseRef.current;
                 if (!pending) return;
-                console.log('[WakeWord] Direct activation — isStreamMode:', isStreamModeRef.current, 'hasToggle:', !!toggleStreamModeRef.current, 'hasRecognition:', !!recognitionRef.current);
                 pendingWakePhraseRef.current = null;
 
                 if (!isStreamModeRef.current && toggleStreamModeRef.current) {
-                  console.log('[WakeWord] Calling toggleStreamMode...');
                   toggleStreamModeRef.current();
                 }
                 if (pending.phrase && handleStreamSendRef.current) {
-                  setTimeout(() => {
-                    console.log('[WakeWord] Sending phrase:', pending.phrase);
-                    handleStreamSendRef.current?.(pending.phrase);
-                  }, 500);
+                  setTimeout(() => handleStreamSendRef.current?.(pending.phrase), 500);
                 }
               }, 800);
             }, WAKE_PHRASE_DELAY),
@@ -1375,11 +1426,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedQubes, all
           return;
         }
       }
-
-      // Don't clear a pending wake word debounce just because a new utterance
-      // doesn't match. The user may have said "Hey Alph, do something" and
-      // the browser split it into two results. Only clear if we never detected
-      // a wake word at all (wakeDebounceRef would be null in that case).
     };
 
     recognition.onend = () => {

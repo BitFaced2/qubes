@@ -313,6 +313,8 @@ class GUIBridge:
         self._streaming_locks: Dict[str, asyncio.Lock] = {}
         self._active_tts_tasks: Dict[str, list] = {}
         self._spoken_chars_on_cancel: Dict[str, int] = {}
+        # Limit concurrent TTS requests to avoid rate limits (Gemini: 10 req/min)
+        self._tts_semaphore = asyncio.Semaphore(2)
 
     def _get_connections_file(self, qube_id: str) -> Path:
         """
@@ -1416,7 +1418,7 @@ class GUIBridge:
                                 stream_callback, is_final=False,
                                 display_text=sentence,  # Original with formatting
                             ),
-                            timeout=30.0
+                            timeout=180.0  # Allow time for rate limit retries + API call
                         )
                     )
                     tts_tasks.append((chunk_index, task))
@@ -1453,7 +1455,7 @@ class GUIBridge:
                                 stream_callback, is_final=True,
                                 display_text=sentence_buffer.strip(),
                             ),
-                            timeout=30.0
+                            timeout=180.0  # Allow time for rate limit retries + API call
                         )
                     )
                     tts_tasks.append((chunk_index, task))
@@ -1464,8 +1466,11 @@ class GUIBridge:
                     audio_path = await task
                     if audio_path:
                         audio_paths.append(audio_path)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    logger.warning("tts_sentence_skipped", chunk=idx, qube_id=qube_id)
+                except asyncio.TimeoutError:
+                    logger.error("tts_sentence_timeout", chunk=idx, qube_id=qube_id,
+                                message="TTS generation timed out after 90s — sentence may be too long")
+                except asyncio.CancelledError:
+                    logger.warning("tts_sentence_cancelled", chunk=idx, qube_id=qube_id)
 
             # Clean up task tracking
             self._active_tts_tasks.pop(qube_id, None)
@@ -1528,34 +1533,35 @@ class GUIBridge:
         stream_callback, is_final: bool, display_text: str = None,
     ):
         """Generate TTS for one sentence and emit audio-ready event."""
-        try:
-            audio_path = await qube.audio_manager.generate_sentence_audio(
-                text=sentence,
-                voice_model=tts_voice,
-                provider=tts_provider_name,
-                chunk_index=chunk_index,
-                custom_voice_config=custom_voice_config,
-            )
-            if stream_callback:
-                await stream_callback("tts-audio-ready", {
-                    "qube_id": qube_id,
-                    "audio_path": str(audio_path),
-                    "chunk_index": chunk_index,
-                    "is_final": is_final,
-                    "sentence_text": display_text or sentence,
-                })
-            return audio_path
-        except Exception as e:
-            logger.error("streaming_tts_sentence_failed",
-                         chunk=chunk_index, error=str(e))
-            if stream_callback:
-                await stream_callback("tts-audio-ready", {
-                    "qube_id": qube_id,
-                    "chunk_index": chunk_index,
-                    "is_final": is_final,
-                    "error": True,
-                })
-            return None
+        async with self._tts_semaphore:
+            try:
+                audio_path = await qube.audio_manager.generate_sentence_audio(
+                    text=sentence,
+                    voice_model=tts_voice,
+                    provider=tts_provider_name,
+                    chunk_index=chunk_index,
+                    custom_voice_config=custom_voice_config,
+                )
+                if stream_callback:
+                    await stream_callback("tts-audio-ready", {
+                        "qube_id": qube_id,
+                        "audio_path": str(audio_path),
+                        "chunk_index": chunk_index,
+                        "is_final": is_final,
+                        "sentence_text": display_text or sentence,
+                    })
+                return audio_path
+            except Exception as e:
+                logger.error("streaming_tts_sentence_failed",
+                             chunk=chunk_index, error=str(e))
+                if stream_callback:
+                    await stream_callback("tts-audio-ready", {
+                        "qube_id": qube_id,
+                        "chunk_index": chunk_index,
+                        "is_final": is_final,
+                        "error": True,
+                    })
+                return None
 
     async def _process_permanent_block(self, qube, qube_id: str, block_num: int) -> Dict[str, Any]:
         """Process a single permanent block (optimized for parallel execution)"""
